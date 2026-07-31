@@ -107,6 +107,16 @@ box-proxy replay [--port 8080] [--dir ./box-proxy-api]
                  [--rewrite relative|absolute|none] [--absolute-base http://127.0.0.1:8080/] [-v]
 ```
 
+## 跨平台支持（Windows / macOS / Linux）
+
+- 代码完全跨平台（tokio + hyper，无平台相关依赖），快照/资源目录可在任意平台间拷贝迁移复用。
+- **一键构建**：`./build.sh`（当前系统）、`./build.sh mac`（macOS）、`./build.sh win`（Windows x64 交叉编译），产物统一输出到 `dist/`。
+  - Windows x64 交叉编译需 mingw：macOS 上 `brew install mingw-w64`。
+  - 体积优化：release 已开启 LTO/panic=abort/strip（无运行代价，各平台约减半）；`win` 构建默认用 UPX 再压一道（`UPX=0` 跳过），Windows 版约 10MB → 1.2MB。注意：UPX 打包可能被部分杀软误报，如遇拦截可 `UPX=0 ./build.sh win` 出未压缩版。
+- **Windows 本地构建**（MSVC）：安装 Rust 后直接 `cargo build --release`，产物 `target\release\box-proxy.exe`。
+- **CI 构建**：仓库根目录 `.github/workflows/ci.yml` 会在 Windows/macOS/Linux 三平台跑 fmt/clippy/test；打 tag 时自动构建三个平台的 release 产物并上传 artifact。
+- Windows 兼容细节：资源副本文件名做了安全化（非法字符替换、裁剪尾随点/空格、Windows 保留设备名 CON/NUL/COM1 等加下划线前缀）；内容哈希去重不受影响；重放仍按原始路径匹配（索引保存原始路径，磁盘副本仅用于人工查看）。
+
 ## 开发
 
 ```bash

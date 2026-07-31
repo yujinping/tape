@@ -76,7 +76,8 @@ impl ResourceStore {
         if !blob_path.exists() {
             std::fs::write(&blob_path, data)?;
         }
-        let rel = normalize_resource_path(url_path);
+        // 索引保留原始相对路径，保证重放按原路径匹配；磁盘副本用跨平台安全文件名
+        let rel = url_path.trim_start_matches('/').to_string();
         if self
             .index
             .iter()
@@ -84,10 +85,11 @@ impl ResourceStore {
         {
             return Ok(());
         }
+        let disk_rel = disk_rel_path(url_path);
         let target = self
             .root
             .join(crate::store::origin_dir_name(origin))
-            .join(&rel);
+            .join(&disk_rel);
         if !target.exists() {
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -246,10 +248,19 @@ fn acceptable_content_type(content_type: &str) -> bool {
     !(ct.contains("text/html") || ct.contains("application/json"))
 }
 
-fn normalize_resource_path(raw_path: &str) -> String {
+/// Windows 保留设备名（含扩展名场景，如 CON.txt），大小写不敏感。
+const WINDOWS_RESERVED: &[&str] = &[
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+/// 生成跨平台安全的磁盘相对路径（仅用于 resources/ 下的人工可读副本）：
+/// 非法字符替换、尾随点/空格裁剪、路径穿越段剔除、Windows 保留设备名前缀下划线。
+fn disk_rel_path(raw_path: &str) -> String {
     let mut segments = Vec::new();
     for seg in raw_path.trim_start_matches('/').split('/') {
-        let sanitized: String = seg
+        let seg = seg.trim_end_matches([' ', '.']);
+        let mut clean: String = seg
             .chars()
             .map(|c| {
                 if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
@@ -259,10 +270,14 @@ fn normalize_resource_path(raw_path: &str) -> String {
                 }
             })
             .collect();
-        let sanitized = sanitized.trim_matches('.').to_string();
-        if !sanitized.is_empty() && sanitized != "." && sanitized != ".." {
-            segments.push(sanitized);
+        if clean.is_empty() || clean == "." || clean == ".." {
+            continue;
         }
+        let stem = clean.split('.').next().unwrap_or("").to_ascii_lowercase();
+        if WINDOWS_RESERVED.contains(&stem.as_str()) {
+            clean = format!("_{clean}");
+        }
+        segments.push(clean);
     }
     if segments.is_empty() {
         "index".to_string()
@@ -276,11 +291,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalize_path() {
-        assert_eq!(normalize_resource_path("/img/a.png"), "img/a.png");
-        assert_eq!(normalize_resource_path("/a//b/c"), "a/b/c");
-        assert_eq!(normalize_resource_path("/"), "index");
-        assert_eq!(normalize_resource_path("/a b?c=d"), "a_b_c_d");
+    fn disk_path_is_cross_platform_safe() {
+        assert_eq!(disk_rel_path("/img/a.png"), "img/a.png");
+        assert_eq!(disk_rel_path("/a//b/c"), "a/b/c");
+        assert_eq!(disk_rel_path("/"), "index");
+        assert_eq!(disk_rel_path("/a b?c=d"), "a_b_c_d");
+        assert_eq!(disk_rel_path("/../etc/passwd"), "etc/passwd");
+        assert_eq!(disk_rel_path("/CON"), "_CON");
+        assert_eq!(disk_rel_path("/con.txt"), "_con.txt");
+        assert_eq!(disk_rel_path("/NUL/x.png"), "_NUL/x.png");
+        assert_eq!(disk_rel_path("/a.png."), "a.png");
+        assert_eq!(disk_rel_path("/a b "), "a_b");
+        assert_eq!(disk_rel_path("/lpt9.log"), "_lpt9.log");
     }
 
     #[test]
@@ -299,6 +321,23 @@ mod tests {
         assert!(is_static_asset_type("font/woff2"));
         assert!(!is_static_asset_type("application/json"));
         assert!(!is_static_asset_type("text/html"));
+    }
+
+    #[tokio::test]
+    async fn store_keeps_original_path_in_index() {
+        let dir = std::env::temp_dir().join(format!("box-proxy-res-idx-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut store = ResourceStore::open(&dir).unwrap();
+        store
+            .store(b"x", "http://10.1.2.3:8080", "/my img/a.png", "image/png")
+            .unwrap();
+        store.save_index().unwrap();
+        assert_eq!(store.index()[0].path, "my img/a.png", "索引应保留原始路径");
+        assert!(
+            dir.join("10.1.2.3_8080/my_img/a.png").is_file(),
+            "磁盘副本用安全文件名"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
