@@ -28,9 +28,11 @@ fi
 # ---- 前置检查 ----
 command -v git-cliff >/dev/null 2>&1 || { echo "错误: 缺少 git-cliff，请先安装（cargo install git-cliff）"; exit 1; }
 [ "$(git branch --show-current)" = "main" ] || { echo "错误: 请先切换到 main 分支"; exit 1; }
-if [ -n "$(git status --porcelain)" ]; then
+# 允许 RELEASE_NOTES.md 保持未提交（发版说明随本次发布一起提交）
+DIRTY="$(git status --porcelain | grep -v 'M RELEASE_NOTES.md' || true)"
+if [ -n "$DIRTY" ]; then
     echo "错误: 工作区有未提交改动，请先提交或 stash："
-    git status --short
+    echo "$DIRTY"
     exit 1
 fi
 if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
@@ -84,7 +86,7 @@ git cliff -o CHANGELOG.md
 echo "已生成 CHANGELOG.md"
 
 # ---- 提交 / 打 tag / 推送 ----
-git add Cargo.toml Cargo.lock CHANGELOG.md
+git add Cargo.toml Cargo.lock CHANGELOG.md RELEASE_NOTES.md
 git commit -m "chore: release $TAG"
 git tag "$TAG"
 
