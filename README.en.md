@@ -281,6 +281,17 @@ tape list [--dir ./tape-api]
 - **CI builds**: [`.github/workflows/ci.yml`](./.github/workflows/ci.yml) runs fmt / clippy / test on Windows, macOS, and Linux; pushing a tag builds release artifacts for all three platforms and uploads them as artifacts.
 - Windows compatibility details: asset copy filenames are sanitized (invalid characters replaced, trailing dots / spaces trimmed, reserved device names such as CON / NUL / COM1 prefixed with `_`); content-hash deduplication is unaffected, and replay still matches by the original path.
 
+## Releasing a New Version
+
+Edit the "本版本变更" (Changes in this release) section of `RELEASE_NOTES.md` first, then run the one-command script:
+
+```bash
+./release.sh 0.1.2            # or ./release.sh v0.1.2
+./release.sh --dry-run 0.1.2  # preview what would be done
+```
+
+The script bumps the version (`Cargo.toml` / `Cargo.lock`), regenerates `CHANGELOG.md` with git-cliff, commits, tags, and pushes `main` plus the tag. Pushing the tag triggers CI to build the three platform binaries, create the Release (body from `RELEASE_NOTES.md`), and attach the assets — no manual web steps.
+
 ## Development
 
 ```bash

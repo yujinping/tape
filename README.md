@@ -281,6 +281,17 @@ tape list [--dir ./tape-api]
 - **CI 构建**：[`.github/workflows/ci.yml`](./.github/workflows/ci.yml) 在 Windows / macOS / Linux 三平台跑 fmt / clippy / test；打 tag 时自动构建三个平台的 release 产物并上传 artifact。
 - Windows 兼容细节：资源副本文件名做了安全化（非法字符替换、裁剪尾随点 / 空格、Windows 保留设备名 CON/NUL/COM1 等加下划线前缀）；内容哈希去重不受影响；重放仍按原始路径匹配。
 
+## 发布新版本
+
+发版前先编辑 `RELEASE_NOTES.md` 的「本版本变更」小节，然后运行一键脚本：
+
+```bash
+./release.sh 0.1.2            # 或 ./release.sh v0.1.2
+./release.sh --dry-run 0.1.2  # 仅预览将执行的操作
+```
+
+脚本自动完成：bump 版本（`Cargo.toml` / `Cargo.lock`）→ git-cliff 生成 `CHANGELOG.md` → 提交 → 打 tag → 推送 `main` 与 tag。推送 tag 后 CI 自动构建三平台二进制、创建 Release（正文取自 `RELEASE_NOTES.md`）并挂载资产，全程无需网页操作。
+
 ## 开发
 
 ```bash
