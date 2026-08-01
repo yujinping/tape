@@ -1,0 +1,85 @@
+# git-cliff ~ configuration file
+# https://git-cliff.org/docs/configuration
+
+[changelog]
+header = """
+# CHANGELOG
+
+本文件由 [git-cliff](https://git-cliff.org) 依据 Conventional Commits 自动生成，请勿手动编辑。
+"""
+body = """
+{% if version %}\
+    ## [{{ version | trim_start_matches(pat="v") }}](<REPO>/releases/tag/{{ version }}) - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+    ## [unreleased](<REPO>/compare/v{{ previous.version }}...HEAD)
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+    ### {{ group | striptags | trim }}
+    {% for commit in commits %}
+        - {% if commit.scope %}*({{ commit.scope }})* {% endif %}\
+            {% if commit.breaking %}[**breaking**] {% endif %}\
+            {{ commit.message | upper_first }}\
+    {% endfor %}
+{% endfor %}
+"""
+# Remove leading and trailing whitespaces from the changelog's body.
+trim = true
+# Render body even when there are no releases to process.
+render_always = true
+# An array of regex based postprocessors to modify the changelog.
+postprocessors = [
+    { pattern = '<REPO>', replace = "https://github.com/yujinping/tape" },
+]
+
+[git]
+# Parse commits according to the conventional commits specification.
+# See https://www.conventionalcommits.org
+conventional_commits = true
+# Exclude commits that do not match the conventional commits specification.
+filter_unconventional = true
+# Require all commits to be conventional.
+# Takes precedence over filter_unconventional.
+require_conventional = false
+# Split commits on newlines, treating each line as an individual commit.
+split_commits = false
+# An array of regex based parsers to modify commit messages prior to further processing.
+commit_preprocessors = []
+# Prevent commits that are breaking from being excluded by commit parsers.
+protect_breaking_commits = false
+# An array of regex based parsers for extracting data from the commit message.
+# Assigns commits to groups.
+# Optionally sets the commit's scope and can decide to exclude commits from further processing.
+commit_parsers = [
+    { message = "^feat", group = "🚀 新功能" },
+    { message = "^fix", group = "🐛 修复" },
+    { message = "^doc", group = "📚 文档" },
+    { message = "^perf", group = "⚡ 性能" },
+    { message = "^refactor", group = "🚜 重构" },
+    { message = "^style", group = "🎨 代码风格" },
+    { message = "^test", group = "🧪 测试" },
+    { message = "^chore\\(release\\): prepare for", skip = true },
+    { message = "^chore\\(deps.*\\)", skip = true },
+    { message = "^chore\\(pr\\)", skip = true },
+    { message = "^chore\\(pull\\)", skip = true },
+    { message = "^chore|^ci", group = "🔧 其他" },
+    { body = ".*security", group = "🛡️ 安全" },
+    { message = "^revert", group = "◀️ 回滚" },
+    { message = ".*", group = "💼 其他" },
+]
+# Exclude commits that are not matched by any commit parser.
+filter_commits = false
+# Fail on a commit that is not matched by any commit parser.
+fail_on_unmatched_commit = false
+# An array of link parsers for extracting external references, and turning them into URLs, using regex.
+link_parsers = []
+# Include only the tags that belong to the current branch.
+use_branch_tags = false
+# Order releases topologically instead of chronologically.
+topo_order = false
+# Order commits topologically instead of chronologically.
+topo_order_commits = true
+# Order of commits in each group/release within the changelog.
+# Allowed values: newest, oldest
+sort_commits = "newest"
+# Process submodules commits
+recurse_submodules = false
