@@ -22,7 +22,9 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use crate::config::{CONFIG_FILE_NAME, RecordConfig, RecordFilter};
-use crate::download::{ResourceStore, download_resources, is_static_asset_type, looks_like_resource};
+use crate::download::{
+    ResourceStore, download_resources, is_static_asset_type, looks_like_resource,
+};
 use crate::http_util::{is_hop_by_hop, parse_proxy_target};
 use crate::rewrite::{RewriteRule, rewrite_location, rewrite_response_bytes_for};
 use crate::snapshot::{self, RequestRecord, ResponseRecord, Snapshot};
@@ -370,10 +372,8 @@ pub async fn handle_request(
                     && name == hyper::header::LOCATION
                     && let Ok(loc) = value.to_str()
                 {
-                    builder = builder.header(
-                        name,
-                        rewrite_location(loc, &scheme, &authority, base),
-                    );
+                    builder =
+                        builder.header(name, rewrite_location(loc, &scheme, &authority, base));
                     continue;
                 }
                 builder = builder.header(name, value);

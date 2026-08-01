@@ -25,8 +25,7 @@ const ASSET_DIR_PREFIXES: &[&str] = &[
 /// 后台下载统一携带浏览器 UA 与页面来源 Referer：
 /// 部分 CDN（如 mintcdn/Cloudflare）对无 Referer 的请求会拖延或拦截（防盗链），
 /// 裸 UA 也可能被识别为爬虫返回不同内容。
-const DOWNLOAD_USER_AGENT: &str =
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
+const DOWNLOAD_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceIndexEntry {

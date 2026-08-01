@@ -201,12 +201,9 @@ fn serve_snapshot(
             },
         ),
         None if matches!(state.rewrite, RewriteRule::None) => Bytes::from(raw_body),
-        None => rewrite_response_bytes_for(
-            &raw_body,
-            &content_encoding,
-            &content_type,
-            &state.rewrite,
-        ),
+        None => {
+            rewrite_response_bytes_for(&raw_body, &content_encoding, &content_type, &state.rewrite)
+        }
     };
 
     let mut builder = Response::builder().status(snap.response.status);

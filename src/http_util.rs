@@ -51,7 +51,9 @@ pub fn parse_proxy_target(uri: &Uri) -> Option<RequestTarget> {
     // 分隔斜杠只剩一个，剥掉后再找 authority 边界；双斜杠且 authority 为空
     // （`/http:///api`）保持原语义（authority 为空 -> None）。
     let after_scheme = if slashes == 1 {
-        after_scheme.strip_prefix('/').unwrap_or(after_scheme.as_str())
+        after_scheme
+            .strip_prefix('/')
+            .unwrap_or(after_scheme.as_str())
     } else {
         after_scheme.as_str()
     };

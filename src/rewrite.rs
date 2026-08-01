@@ -1,10 +1,10 @@
-use std::sync::LazyLock;
 use std::io::{Read, Write};
+use std::sync::LazyLock;
 
 use bytes::Bytes;
+use flate2::Compression;
 use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};
 use flate2::write::{GzEncoder, ZlibEncoder};
-use flate2::Compression;
 use regex::{Captures, Regex};
 
 static URL_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -18,20 +18,16 @@ static URL_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// （前导为 `:` 或字母数字时不视为协议相对 URL），同时排除 `-`：
 /// DOCTYPE 公共标识符 `-//W3C//DTD ...` 里的 `//W3C` 不能当作协议相对链接。
 static PROTOCOL_REL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"(?i)(^|[^:\w-])//([a-z0-9.\-]+)(?::(\d{1,5}))?((?:/[^\s"'<>(){}]*)?)"#,
-    )
-    .expect("invalid protocol-relative regex")
+    Regex::new(r#"(?i)(^|[^:\w-])//([a-z0-9.\-]+)(?::(\d{1,5}))?((?:/[^\s"'<>(){}]*)?)"#)
+        .expect("invalid protocol-relative regex")
 });
 
 /// HTML 标签属性里的根相对路径（`href="/assets/x.css"`、`src="/js/a.js"`、`action="/login"` 等）。
 /// 前缀式模式下浏览器会把 `/assets/x.css` 解析成 `http://<tape>/assets/x.css`（丢失前缀），
 /// 必须改写成 `{base}/{scheme}://{origin}{path}`。
 static HTML_ATTR_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"(?i)(\b(?:href|src|action|poster)\s*=\s*["'])(/[^"'\s>]*)("|')"#,
-    )
-    .expect("invalid html attr regex")
+    Regex::new(r#"(?i)(\b(?:href|src|action|poster)\s*=\s*["'])(/[^"'\s>]*)("|')"#)
+        .expect("invalid html attr regex")
 });
 
 /// CSS 里的根相对路径 `url(/fonts/x.woff2)`（含带引号形式）。
@@ -67,10 +63,9 @@ pub fn rewrite_text(input: &str, rule: &RewriteRule) -> String {
         RewriteRule::None => input.to_string(),
         RewriteRule::Prefix { .. } => {
             let first = URL_RE.replace_all(input, |caps: &Captures| replaced(rule, caps));
-            let second = PROTOCOL_REL_RE
-                .replace_all(&first, |caps: &Captures| {
-                    replaced_protocol_relative(rule, caps)
-                });
+            let second = PROTOCOL_REL_RE.replace_all(&first, |caps: &Captures| {
+                replaced_protocol_relative(rule, caps)
+            });
             HTML_ATTR_RE
                 .replace_all(&second, |caps: &Captures| replaced_html_attr(rule, caps))
                 .into_owned()
@@ -211,7 +206,10 @@ fn replaced(rule: &RewriteRule, caps: &Captures) -> String {
             } else {
                 format!("{host}:{port}")
             };
-            format!("{}/{scheme}://{host_port}{path}", base.trim_end_matches('/'))
+            format!(
+                "{}/{scheme}://{host_port}{path}",
+                base.trim_end_matches('/')
+            )
         }
         RewriteRule::Relative | RewriteRule::None => caps[0].to_string(),
     }
@@ -255,7 +253,12 @@ fn replaced_html_attr(rule: &RewriteRule, caps: &Captures) -> String {
     if path.starts_with("//") {
         return caps[0].to_string(); // 协议相对由 PROTOCOL_REL_RE 处理
     }
-    let RewriteRule::Prefix { base, scheme, origin } = rule else {
+    let RewriteRule::Prefix {
+        base,
+        scheme,
+        origin,
+    } = rule
+    else {
         return caps[0].to_string();
     };
     format!(
@@ -272,7 +275,12 @@ pub fn rewrite_css_response_bytes(
     encoding: &str,
     rule: &RewriteRule,
 ) -> Option<Bytes> {
-    let RewriteRule::Prefix { base, scheme, origin } = rule else {
+    let RewriteRule::Prefix {
+        base,
+        scheme,
+        origin,
+    } = rule
+    else {
         return None;
     };
     let enc = encoding.trim().to_ascii_lowercase();
@@ -548,7 +556,9 @@ mod tests {
         let html = r#"<link rel="stylesheet" href="/assets/website/index.css"><img src="/img/a.png"><form action="/login"><a href="/">home</a>"#;
         let out = rewrite_text(html, &rule);
         assert!(
-            out.contains(r#"href="http://127.0.0.1:8888/https://qwenwork.cn/assets/website/index.css""#),
+            out.contains(
+                r#"href="http://127.0.0.1:8888/https://qwenwork.cn/assets/website/index.css""#
+            ),
             "root-relative css 应改回 tape: {out}"
         );
         assert!(
@@ -594,7 +604,10 @@ mod tests {
         );
         // 相对 url(./assets/x) 不动（浏览器按 CSS 自身路径解析，前缀式下恰好能留对）
         let out = rewrite_css_response_bytes(b"url(./assets/x.ttf)", "", &rule).unwrap();
-        assert_eq!(String::from_utf8(out.to_vec()).unwrap(), "url(./assets/x.ttf)");
+        assert_eq!(
+            String::from_utf8(out.to_vec()).unwrap(),
+            "url(./assets/x.ttf)"
+        );
         // 非前缀规则返回 None
         assert!(rewrite_css_response_bytes(b"x", "", &RewriteRule::Relative).is_none());
         // gzip 压缩 CSS
@@ -616,7 +629,12 @@ mod tests {
         let base = "http://127.0.0.1:8888";
         // 绝对地址 → 前缀式
         assert_eq!(
-            rewrite_location("https://www.dingtalk.com/", "https", "login.dingtalk.com", base),
+            rewrite_location(
+                "https://www.dingtalk.com/",
+                "https",
+                "login.dingtalk.com",
+                base
+            ),
             "http://127.0.0.1:8888/https://www.dingtalk.com/"
         );
         // 协议相对 → 用请求前缀的 scheme
@@ -631,11 +649,21 @@ mod tests {
         );
         // localhost → 原样
         assert_eq!(
-            rewrite_location("http://localhost:8080/x", "https", "login.dingtalk.com", base),
+            rewrite_location(
+                "http://localhost:8080/x",
+                "https",
+                "login.dingtalk.com",
+                base
+            ),
             "http://localhost:8080/x"
         );
         assert_eq!(
-            rewrite_location("http://127.0.0.1:8888/x", "https", "login.dingtalk.com", base),
+            rewrite_location(
+                "http://127.0.0.1:8888/x",
+                "https",
+                "login.dingtalk.com",
+                base
+            ),
             "http://127.0.0.1:8888/x"
         );
         // 空 / 锚点 → 原样

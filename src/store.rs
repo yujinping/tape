@@ -238,7 +238,10 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         Recorder::new(dir.clone()).unwrap();
-        assert!(dir.join("session.json").is_file(), "启动应写入 session.json");
+        assert!(
+            dir.join("session.json").is_file(),
+            "启动应写入 session.json"
+        );
         let text = std::fs::read_to_string(dir.join("session.json")).unwrap();
         assert!(text.contains("\"snapshot_count\": 0"));
         let _ = std::fs::remove_dir_all(&dir);

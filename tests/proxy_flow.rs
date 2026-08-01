@@ -244,7 +244,8 @@ async fn spawn_origin_page() -> SocketAddr {
 async fn spawn_origin_gzip_page() -> SocketAddr {
     let listener = free_listener().await;
     let addr = listener.local_addr().unwrap();
-    let html = r#"<script src="//img.alicdn.com/a.js"></script><a href="https://www.test.com/x">x</a>"#;
+    let html =
+        r#"<script src="//img.alicdn.com/a.js"></script><a href="https://www.test.com/x">x</a>"#;
     tokio::spawn(async move {
         loop {
             let Ok((stream, _)) = listener.accept().await else {
@@ -258,7 +259,8 @@ async fn spawn_origin_gzip_page() -> SocketAddr {
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("")
                     .to_string();
-                let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+                let mut enc =
+                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
                 enc.write_all(html.as_bytes()).unwrap();
                 let gz = enc.finish().unwrap();
                 Ok::<_, std::convert::Infallible>(
@@ -282,7 +284,9 @@ async fn spawn_origin_gzip_page() -> SocketAddr {
 fn gunzip(data: &[u8]) -> Vec<u8> {
     use std::io::Read;
     let mut out = Vec::new();
-    flate2::read::GzDecoder::new(data).read_to_end(&mut out).unwrap();
+    flate2::read::GzDecoder::new(data)
+        .read_to_end(&mut out)
+        .unwrap();
     out
 }
 
@@ -306,7 +310,12 @@ async fn raw_request(addr: SocketAddr, request_line: &str, host: &str) -> String
     String::from_utf8_lossy(&buf).to_string()
 }
 
-async fn raw_request_with_header(addr: SocketAddr, request_line: &str, host: &str, extra: &str) -> String {
+async fn raw_request_with_header(
+    addr: SocketAddr,
+    request_line: &str,
+    host: &str,
+    extra: &str,
+) -> String {
     let mut stream = TcpStream::connect(addr).await.unwrap();
     let req = format!("{request_line}\r\nHost: {host}\r\n{extra}Connection: close\r\n\r\n");
     stream.write_all(req.as_bytes()).await.unwrap();
@@ -513,10 +522,7 @@ async fn record_prefix_style_rewrites_page_links_back_to_tape() {
     );
     let snaps = tape::store::load_snapshots(&dir).unwrap();
     assert!(snaps[0].response.body.contains("//img.alicdn.com/a.js"));
-    assert!(snaps[0]
-        .response
-        .body
-        .contains("https://www.test.com/x"));
+    assert!(snaps[0].response.body.contains("https://www.test.com/x"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -595,10 +601,8 @@ async fn record_rewrites_compressed_page_and_forces_identity() {
             .any(|(k, v)| k.eq_ignore_ascii_case("content-encoding") && v == "gzip"),
         "快照应记录 content-encoding: gzip"
     );
-    let raw = tape::snapshot::decode_body(
-        &snaps[0].response.body,
-        &snaps[0].response.body_encoding,
-    );
+    let raw =
+        tape::snapshot::decode_body(&snaps[0].response.body, &snaps[0].response.body_encoding);
     assert_eq!(&raw[..2], &[0x1f, 0x8b], "快照 body 应为原始 gzip 字节");
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -647,11 +651,7 @@ async fn replay_rewrites_compressed_snapshot() {
     let c = client();
     let base = format!("http://127.0.0.1:{}", replay_addr.port());
     let resp = c
-        .get(
-            format!("{base}/http://10.1.2.3:8080/page")
-                .parse()
-                .unwrap(),
-        )
+        .get(format!("{base}/http://10.1.2.3:8080/page").parse().unwrap())
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -824,7 +824,10 @@ async fn replay_prefix_style_rewrites_redirect_back_to_tape() {
         response: ResponseRecord {
             status: 302,
             headers: vec![
-                ("location".to_string(), "https://www.dingtalk.com/".to_string()),
+                (
+                    "location".to_string(),
+                    "https://www.dingtalk.com/".to_string(),
+                ),
                 ("content-type".to_string(), "text/plain".to_string()),
             ],
             body: "redirecting".to_string(),
@@ -1167,7 +1170,10 @@ async fn record_injects_referer_for_resource_requests() {
         &format!("127.0.0.1:{}", proxy_addr.port()),
     )
     .await;
-    assert!(resp.contains("REFERER=[]"), "非资源请求不应注入 Referer: {resp}");
+    assert!(
+        resp.contains("REFERER=[]"),
+        "非资源请求不应注入 Referer: {resp}"
+    );
 
     // 客户端已带 Referer：原样保留，不改写
     let client_referer = "http://client.example/from-browser".to_string();
@@ -1179,7 +1185,10 @@ async fn record_injects_referer_for_resource_requests() {
     )
     .await;
     assert!(
-        resp.contains(&format!("REFERER=[{}]", client_referer.replace("http://", ""))),
+        resp.contains(&format!(
+            "REFERER=[{}]",
+            client_referer.replace("http://", "")
+        )),
         "客户端自带 Referer 应原样保留: {resp}"
     );
 
