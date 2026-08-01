@@ -72,11 +72,11 @@ jobs:
       contents: write
     steps:
       - name: download all release artifacts
-        uses: dawidd6/action-download-artifact@v6
+        uses: actions/download-artifact@v4
         with:
-          name: tape-*
+          pattern: tape-*
           path: dist
-          merge_multiple: true
+          merge-multiple: true
       - name: publish release
         uses: softprops/action-gh-release@v2
         with:
