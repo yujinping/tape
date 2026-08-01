@@ -263,10 +263,12 @@ Snapshots are JSON: they can be edited or deleted by hand, and replay picks them
 tape record [--port 8888] [--dir ./tape-api] [--config tape-config.toml] [--rewrite-on-record] [-v]
 tape replay [--port 8888] [--dir ./tape-api] [--config tape-config.toml]
                  [--rewrite relative|absolute|none] [--absolute-base http://127.0.0.1:8888/] [-v]
+tape list [--dir ./tape-api]
 ```
 
 - `--config`: shared config file for record / replay. When omitted, tape reads `tape-config.toml` from the data directory; if missing, record captures everything and replay uses built-in defaults. When explicitly provided, the file must exist and be valid.
 - `--port`: `8888` by default for both record and replay, keeping the app's address identical across the two phases.
+- `tape list`: lists the cached sites in the data directory with per-site snapshot and asset counts (based on the `snapshots/` directory).
 - `--rewrite-on-record`: also rewrite responses while recording (default off, to keep live sessions on the corporate network untouched).
 
 ## Cross-platform Support (Windows / macOS / Linux)

@@ -17,6 +17,15 @@ pub enum Command {
     Record(RecordArgs),
     /// 重放模式：本地离线服务，按 method+path 匹配快照并返回改写后的响应
     Replay(ReplayArgs),
+    /// 列出数据目录下缓存的站点与接口/资源数量
+    List(ListArgs),
+}
+
+#[derive(Args)]
+pub struct ListArgs {
+    /// 快照数据目录（默认当前目录下 tape-api，支持软链接切换已录制目录）
+    #[arg(short, long, default_value = "./tape-api")]
+    pub dir: PathBuf,
 }
 
 #[derive(Args)]

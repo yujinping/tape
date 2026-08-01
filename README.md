@@ -263,10 +263,12 @@ tape-api/
 tape record [--port 8888] [--dir ./tape-api] [--config tape-config.toml] [--rewrite-on-record] [-v]
 tape replay [--port 8888] [--dir ./tape-api] [--config tape-config.toml]
                  [--rewrite relative|absolute|none] [--absolute-base http://127.0.0.1:8888/] [-v]
+tape list [--dir ./tape-api]
 ```
 
 - `--config`：record / replay 共用配置文件。未指定时默认读取数据目录下的 `tape-config.toml`；该文件不存在时 record 录制全部、replay 使用内置默认值；显式指定则必须存在且合法。
 - `--port`：record / replay 默认都是 `8888`，录制与重放两阶段 App 地址保持一致。
+- `tape list`：列出数据目录下缓存的站点，以及每个站点的接口快照数与资源文件数（以 `snapshots/` 目录为准）。
 - `--rewrite-on-record`：录制时同步改写回传给 App 的响应（默认关闭，避免影响公司网络下的实时会话）。
 
 ## 跨平台支持（Windows / macOS / Linux）
