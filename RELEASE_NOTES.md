@@ -8,9 +8,9 @@ tape 在「公司专网 / 有网环境」下将 App 的全部 HTTP 请求与响�
 
 ## 本版本变更
 
-- 新增 `tape list` 子命令：一条命令列出数据目录下缓存的站点及每个站点的接口/资源数量。
-- 发布流程自动化：打 `v*` tag 即自动构建三平台二进制、创建 Release、挂载资产，正文自动使用本文件。
-- 客户端兼容增强：自动识别 `http:/` / `https:/` 单斜杠折叠前缀（OkHttp 等库根路径解析形态）。
+- 新增 `release.sh` 一键发版脚本：bump 版本 → 自动生成 CHANGELOG → 提交 → 打 tag → 推送触发 CI 发布，全程一条命令。
+- 引入 git-cliff 自动生成 `CHANGELOG.md`（按 Conventional Commits 分组，含 Release 链接）。
+- README 补充发布新版本流程说明。
 
 ## 核心亮点
 

@@ -1,6 +1,17 @@
 # CHANGELOG
 
 本文件由 [git-cliff](https://git-cliff.org) 依据 Conventional Commits 自动生成，请勿手动编辑。
+## [unreleased](https://github.com/yujinping/tape/compare/vv0.1.1...HEAD)
+
+### 💼 其他
+
+- Release.sh 允许 RELEASE_NOTES.md 随发布一起提交
+- 新增一键发版脚本 release.sh（bump/CHANGELOG/tag/推送）
+
+### 📚 文档
+
+- README 补充一键发版流程说明
+- 引入 git-cliff 自动生成 CHANGELOG
 ## [0.1.1](https://github.com/yujinping/tape/releases/tag/v0.1.1) - 2026-08-01
 
 ### 🔧 其他
