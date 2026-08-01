@@ -16,8 +16,8 @@ use tracing::{info, warn};
 
 use crate::config::ReplayConfig;
 use crate::download::{ResourceIndexEntry, ResourceStore};
-use crate::http_util::is_hop_by_hop_str;
-use crate::rewrite::{RewriteRule, rewrite_text};
+use crate::http_util::{is_hop_by_hop_str, parse_proxy_target};
+use crate::rewrite::{RewriteRule, rewrite_location, rewrite_response_bytes_for};
 use crate::snapshot::{self, Snapshot};
 use crate::store;
 
@@ -77,11 +77,16 @@ impl ReplayState {
 pub async fn run(cfg: ReplayConfig) -> Result<()> {
     let state = ReplayState::new(cfg.dir.clone(), cfg.rewrite)?;
     let listener = TcpListener::bind(("0.0.0.0", cfg.port)).await?;
+    let abs_dir = std::path::absolute(&cfg.dir).unwrap_or_else(|_| cfg.dir.clone());
     info!(
-        "box-proxy replay 已启动: 0.0.0.0:{} （数据目录: {}）",
+        "tape replay 已启动: 0.0.0.0:{} （数据目录: {}，绝对路径: {}）",
         cfg.port,
-        cfg.dir.display()
+        cfg.dir.display(),
+        abs_dir.display()
     );
+    if let Some(path) = &cfg.config_path {
+        info!("配置文件: {}", path.display());
+    }
     info!("请将 APP 的服务器 IP 改为 本机IP:{} 后访问", cfg.port);
     accept_loop(listener, state).await
 }
@@ -117,7 +122,6 @@ pub async fn handle_request(
     req: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
     let method = req.method().to_string();
-    let path = req.uri().path().to_string();
     let host = req
         .headers()
         .get(hyper::header::HOST)
@@ -125,13 +129,35 @@ pub async fn handle_request(
         .unwrap_or("")
         .to_string();
 
-    if let Some(snap) = state.match_snapshot(&method, &path, &host) {
+    // 自动识别 absolute-form 与 /http://host/path 前缀式请求，剥离前缀后匹配快照；
+    // 前缀式/代理式请求用解析出的目标主机做 origin 精确匹配，普通直连请求用 Host 头。
+    let target = parse_proxy_target(req.uri());
+    let path = target
+        .as_ref()
+        .map(|t| t.path_and_query.clone())
+        .unwrap_or_else(|| req.uri().path().to_string());
+    let match_host = target
+        .as_ref()
+        .map(|t| t.authority.clone())
+        .unwrap_or_else(|| host.clone());
+    // 前缀式请求：响应里的 Location/链接自动改写成回到 tape 的前缀式地址（无需开关），
+    // 否则客户端会按真实地址直连上游，跳转/链接直接绕过 tape 导致断链。
+    let prefix_ctx = match &target {
+        Some(t) if t.prefix && !host.is_empty() => Some((
+            format!("http://{host}"),
+            t.scheme.clone(),
+            t.authority.clone(),
+        )),
+        _ => None,
+    };
+
+    if let Some(snap) = state.match_snapshot(&method, &path, &match_host) {
         info!("HIT  {} {}", method, path);
-        return serve_snapshot(&state, snap, &path);
+        return serve_snapshot(&state, snap, &path, prefix_ctx.as_ref());
     }
     if let Some(entry) = state.resources.get(&path) {
         info!("RES  {} {}", method, path);
-        return serve_resource(&state, entry, &path);
+        return serve_resource(&state, entry, &path, prefix_ctx.as_ref());
     }
     warn!("MISS {} {}", method, path);
     let body = format!("未找到 {} {} 的录制快照", method, path);
@@ -142,14 +168,45 @@ pub async fn handle_request(
         .unwrap()
 }
 
-fn serve_snapshot(state: &ReplayState, snap: &Snapshot, path: &str) -> Response<Full<Bytes>> {
+fn serve_snapshot(
+    state: &ReplayState,
+    snap: &Snapshot,
+    path: &str,
+    prefix: Option<&(String, String, String)>,
+) -> Response<Full<Bytes>> {
     let raw_body = snapshot::decode_body(&snap.response.body, &snap.response.body_encoding);
-    let body = if matches!(state.rewrite, RewriteRule::None) {
-        Bytes::from(raw_body)
-    } else if let Ok(text) = std::str::from_utf8(&raw_body) {
-        Bytes::from(rewrite_text(text, &state.rewrite))
-    } else {
-        Bytes::from(raw_body)
+    let content_encoding = snap
+        .response
+        .headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-encoding"))
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default();
+    let content_type = snap
+        .response
+        .headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default();
+    let body = match prefix {
+        Some((base, scheme, origin)) => rewrite_response_bytes_for(
+            &raw_body,
+            &content_encoding,
+            &content_type,
+            &RewriteRule::Prefix {
+                base: base.clone(),
+                scheme: scheme.clone(),
+                origin: origin.clone(),
+            },
+        ),
+        None if matches!(state.rewrite, RewriteRule::None) => Bytes::from(raw_body),
+        None => rewrite_response_bytes_for(
+            &raw_body,
+            &content_encoding,
+            &content_type,
+            &state.rewrite,
+        ),
     };
 
     let mut builder = Response::builder().status(snap.response.status);
@@ -160,6 +217,12 @@ fn serve_snapshot(state: &ReplayState, snap: &Snapshot, path: &str) -> Response<
         }
         if name.eq_ignore_ascii_case("content-type") {
             has_content_type = true;
+        }
+        if let Some((base, scheme, origin)) = prefix
+            && name.eq_ignore_ascii_case("location")
+        {
+            builder = builder.header(name, rewrite_location(value, scheme, origin, base));
+            continue;
         }
         builder = builder.header(name, value);
     }
@@ -178,6 +241,7 @@ fn serve_resource(
     state: &ReplayState,
     entry: &ResourceIndexEntry,
     path: &str,
+    prefix: Option<&(String, String, String)>,
 ) -> Response<Full<Bytes>> {
     let blob_path = state.root.join("resources").join("blobs").join(&entry.hash);
     match std::fs::read(&blob_path) {
@@ -185,11 +249,24 @@ fn serve_resource(
             let mime = mime_guess::from_path(path)
                 .first_raw()
                 .unwrap_or(&entry.content_type);
+            let body = match prefix {
+                Some((base, scheme, origin)) => rewrite_response_bytes_for(
+                    &data,
+                    "",
+                    mime,
+                    &RewriteRule::Prefix {
+                        base: base.clone(),
+                        scheme: scheme.clone(),
+                        origin: origin.clone(),
+                    },
+                ),
+                None => Bytes::from(data),
+            };
             Response::builder()
                 .status(StatusCode::OK)
                 .header(hyper::header::CONTENT_TYPE, mime)
                 .header("Cache-Control", "public, max-age=86400")
-                .body(Full::new(Bytes::from(data)))
+                .body(Full::new(body))
                 .unwrap()
         }
         Err(e) => {

@@ -60,12 +60,15 @@ impl Recorder {
     pub fn new(root: PathBuf) -> Result<Self> {
         std::fs::create_dir_all(root.join("snapshots"))
             .with_context(|| format!("无法创建快照目录: {}", root.display()))?;
-        Ok(Self {
+        let recorder = Self {
             root,
             seq: AtomicU64::new(0),
             origins: Mutex::new(Vec::new()),
             recorded_at: now_rfc3339(),
-        })
+        };
+        // 启动即落盘 session.json（0 条快照），避免数据目录看起来"未初始化"
+        recorder.save_session()?;
+        Ok(recorder)
     }
 
     pub fn root(&self) -> &Path {
@@ -199,7 +202,7 @@ mod tests {
 
     #[test]
     fn recorder_writes_and_loads_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("box-proxy-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tape-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let recorder = Recorder::new(dir.clone()).unwrap();
 
@@ -220,6 +223,24 @@ mod tests {
         assert_eq!(loaded[0].response.body, r#"{"name":"中文"}"#);
         assert_eq!(loaded[1].response.body_encoding, ENCODING_BASE64);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recorder_initializes_empty_session_at_startup() {
+        let dir = std::env::temp_dir().join(format!(
+            "tape-test-session-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        Recorder::new(dir.clone()).unwrap();
+        assert!(dir.join("session.json").is_file(), "启动应写入 session.json");
+        let text = std::fs::read_to_string(dir.join("session.json")).unwrap();
+        assert!(text.contains("\"snapshot_count\": 0"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -22,6 +22,12 @@ const ASSET_DIR_PREFIXES: &[&str] = &[
     "/static/", "/assets/", "/img/", "/images/", "/upload/", "/fonts/", "/media/",
 ];
 
+/// 后台下载统一携带浏览器 UA 与页面来源 Referer：
+/// 部分 CDN（如 mintcdn/Cloudflare）对无 Referer 的请求会拖延或拦截（防盗链），
+/// 裸 UA 也可能被识别为爬虫返回不同内容。
+const DOWNLOAD_USER_AGENT: &str =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceIndexEntry {
     pub hash: String,
@@ -177,8 +183,12 @@ async fn fetch_and_store(
     let req = Request::builder()
         .method("GET")
         .uri(url)
+        .header(hyper::header::REFERER, format!("{origin}/"))
+        .header(hyper::header::USER_AGENT, DOWNLOAD_USER_AGENT)
         .body(Full::new(Bytes::new()))?;
-    let resp = tokio::time::timeout(Duration::from_secs(15), client.request(req)).await??;
+    // 部分 CDN（如 mintcdn）响应很慢：实测 TTFB 可达 14s+、下载速率极低。
+    // 连接+响应头放宽到 60s，body 下载再放宽到 120s，避免大图/慢源误超时。
+    let resp = tokio::time::timeout(Duration::from_secs(60), client.request(req)).await??;
     if resp.status() != StatusCode::OK {
         return Ok(());
     }
@@ -191,7 +201,9 @@ async fn fetch_and_store(
     if !acceptable_content_type(&content_type) {
         return Ok(());
     }
-    let body = resp.collect().await?.to_bytes();
+    let body = tokio::time::timeout(Duration::from_secs(120), resp.collect())
+        .await??
+        .to_bytes();
     if body.is_empty() {
         return Ok(());
     }
@@ -216,7 +228,7 @@ pub fn is_static_asset_type(content_type: &str) -> bool {
         || ct.contains("x-icon")
 }
 
-fn looks_like_resource(url: &str) -> bool {
+pub fn looks_like_resource(url: &str) -> bool {
     let path = rewrite::url_path(url);
     if let Some(ext) = path.rsplit('.').next()
         && !ext.contains('/')
@@ -325,7 +337,7 @@ mod tests {
 
     #[tokio::test]
     async fn store_keeps_original_path_in_index() {
-        let dir = std::env::temp_dir().join(format!("box-proxy-res-idx-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tape-res-idx-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut store = ResourceStore::open(&dir).unwrap();
         store
@@ -342,7 +354,7 @@ mod tests {
 
     #[tokio::test]
     async fn store_dedups_by_hash() {
-        let dir = std::env::temp_dir().join(format!("box-proxy-res-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tape-res-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         let mut store = ResourceStore::open(&dir).unwrap();

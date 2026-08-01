@@ -3,28 +3,33 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
+use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::{DigitallySignedStruct, SignatureScheme};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use crate::config::{RecordConfig, RecordFilter};
-use crate::download::{ResourceStore, download_resources, is_static_asset_type};
-use crate::http_util::is_hop_by_hop;
-use crate::rewrite::{RewriteRule, rewrite_text};
+use crate::config::{CONFIG_FILE_NAME, RecordConfig, RecordFilter};
+use crate::download::{ResourceStore, download_resources, is_static_asset_type, looks_like_resource};
+use crate::http_util::{is_hop_by_hop, parse_proxy_target};
+use crate::rewrite::{RewriteRule, rewrite_location, rewrite_response_bytes_for};
 use crate::snapshot::{self, RequestRecord, ResponseRecord, Snapshot};
 use crate::store::Recorder;
 
-pub type HttpClient = Client<HttpConnector, Full<Bytes>>;
+/// 同时支持 http/https 上游的转发客户端。
+pub type HttpClient = Client<HttpsConnector<HttpConnector>, Full<Bytes>>;
 
 pub struct RecordState {
     pub recorder: Recorder,
@@ -39,7 +44,7 @@ impl RecordState {
     pub fn new(dir: PathBuf, rewrite_on_record: bool, filter: RecordFilter) -> Result<Arc<Self>> {
         let recorder = Recorder::new(dir.clone())?;
         let resources = Arc::new(Mutex::new(ResourceStore::open(&dir.join("resources"))?));
-        let client = Client::builder(TokioExecutor::new()).build_http();
+        let client = build_client()?;
         Ok(Arc::new(Self {
             recorder,
             client,
@@ -54,17 +59,96 @@ impl RecordState {
     }
 }
 
+fn build_client() -> Result<HttpClient> {
+    let https = if insecure_tls_enabled() {
+        let config = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NoVerify))
+            .with_no_client_auth();
+        HttpsConnectorBuilder::new()
+            .with_tls_config(config)
+            .https_or_http()
+            .enable_http1()
+            .build()
+    } else {
+        HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .context("加载系统 TLS 根证书失败")?
+            .https_or_http()
+            .enable_http1()
+            .build()
+    };
+    Ok(Client::builder(TokioExecutor::new()).build(https))
+}
+
+/// 专网自签证书场景：设置 TAPE_INSECURE_TLS=1 跳过上游 TLS 证书校验。
+fn insecure_tls_enabled() -> bool {
+    matches!(
+        std::env::var("TAPE_INSECURE_TLS").as_deref(),
+        Ok(v) if v != "0" && !v.is_empty()
+    )
+}
+
+/// 跳过证书校验的验证器（仅 TAPE_INSECURE_TLS=1 时启用）。
+#[derive(Debug)]
+struct NoVerify;
+
+impl ServerCertVerifier for NoVerify {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        rustls::crypto::CryptoProvider::get_default()
+            .map(|p| p.signature_verification_algorithms.supported_schemes())
+            .unwrap_or_default()
+    }
+}
+
 pub async fn run(cfg: RecordConfig) -> Result<()> {
     let state = RecordState::new(cfg.dir.clone(), cfg.rewrite_on_record, cfg.filter)?;
     let listener = TcpListener::bind(("0.0.0.0", cfg.port)).await?;
+    let abs_dir = std::path::absolute(&cfg.dir).unwrap_or_else(|_| cfg.dir.clone());
     info!(
-        "box-proxy record 已启动: 0.0.0.0:{} （数据目录: {}）",
+        "tape record 已启动: 0.0.0.0:{} （数据目录: {}，绝对路径: {}）",
         cfg.port,
-        cfg.dir.display()
+        cfg.dir.display(),
+        abs_dir.display()
     );
     if state.filter.is_all() {
-        info!("录制过滤: 全部上游（可用 --config 指定配置文件限定只录制匹配的上游）");
+        info!(
+            "录制过滤: 全部上游（可在数据目录放置 {} 或用 --config 指定配置文件限定只录制匹配的上游）",
+            CONFIG_FILE_NAME
+        );
     } else {
+        if let Some(path) = &cfg.config_path {
+            info!("录制过滤配置文件: {}", path.display());
+        }
         info!("录制过滤: 仅配置文件中匹配的上游（其余请求正常转发但不落快照）");
     }
     info!("请在 APP/设备上配置 HTTP 代理为 本机IP:{}", cfg.port);
@@ -101,33 +185,36 @@ pub async fn handle_request(
     state: Arc<RecordState>,
     req: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    let uri = req.uri();
-    let (scheme, authority) = match (uri.scheme_str(), uri.authority()) {
-        (Some(s), Some(a)) => (s.to_string(), a.as_str().to_string()),
-        _ => {
-            return simple_response(
-                StatusCode::BAD_REQUEST,
-                "box-proxy record 需要 absolute-form 请求行（正向代理模式下请为 APP 配置 HTTP 代理）",
-            );
-        }
+    let Some(target) = parse_proxy_target(req.uri()) else {
+        return simple_response(
+            StatusCode::BAD_REQUEST,
+            "tape record 需要 absolute-form 请求行（正向代理），或 /http://host/path 前缀式请求路径（无法配置代理时直接加前缀访问）",
+        );
     };
-    if scheme != "http" {
+    let scheme = target.scheme;
+    if scheme != "http" && scheme != "https" {
         return simple_response(
             StatusCode::NOT_IMPLEMENTED,
-            &format!("不支持协议 {scheme}，本工具仅支持纯 HTTP"),
+            &format!("不支持协议 {scheme}，本工具仅支持 http/https"),
         );
     }
 
+    let prefix_style = target.prefix;
+    let authority = target.authority;
     let record = state.should_record(&authority);
     let origin = format!("{scheme}://{authority}");
-    let path_and_query = uri
-        .path_and_query()
-        .map(|p| p.as_str().to_string())
-        .unwrap_or_else(|| "/".to_string());
+    let path_and_query = target.path_and_query;
     let full_url = format!("{origin}{path_and_query}");
 
     let (parts, body) = req.into_parts();
     let method = parts.method.clone();
+    // 前缀式请求下 Host 是客户端看到的 tape 自身地址（改写 Location/链接回 tape 需要它）
+    let req_host = parts
+        .headers
+        .get(hyper::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
     let request_headers = parts
         .headers
         .iter()
@@ -142,12 +229,29 @@ pub async fn handle_request(
     // 转发必须携带完整绝对 URL，hyper 客户端据此解析连接目标
     let mut builder = Request::builder().method(&method).uri(full_url.clone());
     for (name, value) in parts.headers.iter() {
-        if is_hop_by_hop(name) {
+        // 丢弃客户端原始 Host（absolute-form/前缀式下它是代理自身地址，会导致上游 403），
+        // 下面统一覆写为目标 authority。
+        // Accept-Encoding 也覆写为 identity：保证上游返回明文，页面/JS/CSS 才能被改写；
+        // 否则浏览器带 gzip/br 时上游压缩响应，压缩体无法改写，页面链接会直连公网。
+        if is_hop_by_hop(name)
+            || name == hyper::header::HOST
+            || name == hyper::header::ACCEPT_ENCODING
+        {
             continue;
         }
         builder = builder.header(name, value);
     }
     builder = builder.header(hyper::header::HOST, &authority);
+    builder = builder.header(hyper::header::ACCEPT_ENCODING, "identity");
+    // 防盗链兜底：部分 CDN（如 mintcdn）对无 Referer 的静态资源请求会拖延/拦截；
+    // 浏览器可能因 Referrer-Policy 不带 Referer，这里对静态资源 GET/HEAD 补页面 origin 的 Referer
+    // （客户端已带 Referer 时原样保留，不改写）。
+    if !parts.headers.contains_key(hyper::header::REFERER)
+        && (method == hyper::Method::GET || method == hyper::Method::HEAD)
+        && looks_like_resource(&path_and_query)
+    {
+        builder = builder.header(hyper::header::REFERER, format!("{origin}/"));
+    }
     let forward = match builder.body(Full::new(req_body.clone())) {
         Ok(f) => f,
         Err(e) => {
@@ -159,8 +263,25 @@ pub async fn handle_request(
     };
 
     let start = Instant::now();
-    let outcome = tokio::time::timeout(Duration::from_secs(30), async {
-        let resp = state.client.request(forward).await?;
+    // 静态资源（图片/字体/CSS/JS 等）允许更长的上游响应时间：部分 CDN（如 mintcdn）TTFB 可达 14s+，
+    // 统一 30s 总超时会导致浏览器侧图片加载失败；页面/API 请求仍保持 30s，避免慢上游拖垮交互。
+    let (timeout, timeout_label) = if looks_like_resource(&path_and_query) {
+        (Duration::from_secs(120), "120s")
+    } else {
+        (Duration::from_secs(30), "30s")
+    };
+    // GET/HEAD 幂等，连接池可能复用了被上游重置的死连接，失败重试一次（其它方法不重试，避免重复提交）。
+    let retryable = method == hyper::Method::GET || method == hyper::Method::HEAD;
+    let retry_forward = forward.clone();
+    let outcome = tokio::time::timeout(timeout, async {
+        let resp = match state.client.request(forward).await {
+            Ok(r) => r,
+            Err(e) if retryable => {
+                warn!("转发失败，重试一次 {}: {}", origin, e);
+                state.client.request(retry_forward).await?
+            }
+            Err(e) => return Err(e.into()),
+        };
         let (resp_parts, resp_body) = resp.into_parts();
         let body = resp_body.collect().await?.to_bytes();
         Ok::<_, anyhow::Error>((resp_parts, body))
@@ -179,6 +300,12 @@ pub async fn handle_request(
             let content_type = resp_parts
                 .headers
                 .get(hyper::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            let content_encoding = resp_parts
+                .headers
+                .get(hyper::header::CONTENT_ENCODING)
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("")
                 .to_string();
@@ -204,17 +331,49 @@ pub async fn handle_request(
                 debug!("未匹配录制过滤规则，仅转发不录制: {}", origin);
             }
 
-            // 回传：默认原样（保真）；开启 --rewrite-on-record 时改写
-            let mut out_body = resp_body;
-            if state.rewrite_on_record
-                && let Ok(text) = std::str::from_utf8(&out_body)
-            {
-                out_body = Bytes::from(rewrite_text(text, &RewriteRule::Relative));
-            }
+            // 回传：absolute-form 默认原样（保真），开启 --rewrite-on-record 时改写 body；
+            // 前缀式请求自动把 Location/链接改写成回到 tape 的前缀式地址（快照仍存原始响应），
+            // 否则客户端会按真实地址直连上游，跳转/链接直接绕过 tape 导致断链。
+            let prefix_base = if prefix_style && !req_host.is_empty() {
+                Some(format!("http://{req_host}"))
+            } else {
+                None
+            };
+            let out_body = if let Some(base) = &prefix_base {
+                rewrite_response_bytes_for(
+                    &resp_body,
+                    &content_encoding,
+                    &content_type,
+                    &RewriteRule::Prefix {
+                        base: base.clone(),
+                        scheme: scheme.clone(),
+                        origin: authority.clone(),
+                    },
+                )
+            } else if state.rewrite_on_record {
+                rewrite_response_bytes_for(
+                    &resp_body,
+                    &content_encoding,
+                    &content_type,
+                    &RewriteRule::Relative,
+                )
+            } else {
+                resp_body
+            };
 
             let mut builder = Response::builder().status(status);
             for (name, value) in resp_parts.headers.iter() {
                 if is_hop_by_hop(name) || name == hyper::header::CONTENT_LENGTH {
+                    continue;
+                }
+                if let Some(base) = &prefix_base
+                    && name == hyper::header::LOCATION
+                    && let Ok(loc) = value.to_str()
+                {
+                    builder = builder.header(
+                        name,
+                        rewrite_location(loc, &scheme, &authority, base),
+                    );
                     continue;
                 }
                 builder = builder.header(name, value);
@@ -232,8 +391,11 @@ pub async fn handle_request(
             simple_response(StatusCode::BAD_GATEWAY, &format!("无法连接上游 {origin}"))
         }
         Err(_) => {
-            warn!("转发超时（30s）: {}", origin);
-            simple_response(StatusCode::GATEWAY_TIMEOUT, "上游响应超时（30s）")
+            warn!("转发超时（{timeout_label}）: {}", origin);
+            simple_response(
+                StatusCode::GATEWAY_TIMEOUT,
+                &format!("上游响应超时（{timeout_label}）"),
+            )
         }
     }
 }

@@ -1,7 +1,7 @@
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use box_proxy::{cli, config, record, replay};
+use tape::{cli, config, record, replay};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -15,7 +15,13 @@ async fn main() -> anyhow::Result<()> {
         }
         cli::Command::Replay(args) => {
             init_tracing(args.verbose);
-            let cfg = config::replay_config(args.port, args.dir, args.rewrite, args.absolute_base)?;
+            let cfg = config::replay_config(
+                args.port,
+                args.dir,
+                args.rewrite,
+                args.absolute_base,
+                args.config,
+            )?;
             replay::run(cfg).await
         }
     }
@@ -27,7 +33,7 @@ fn init_tracing(verbose: u8) {
         1 => "debug",
         _ => "trace",
     };
-    let default = format!("box_proxy={},hyper=warn,hyper_util=warn,tower=warn", level);
+    let default = format!("tape={},hyper=warn,hyper_util=warn,tower=warn", level);
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&default));
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }

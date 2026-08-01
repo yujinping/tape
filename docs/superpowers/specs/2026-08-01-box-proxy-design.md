@@ -1,13 +1,13 @@
-# box-proxy 设计文档（2026-08-01）
+# tape 设计文档（2026-08-01）
 
 > 依据 PRD《专网HTTP接口录制与离线重放代理工具需求文档》设计。
 
 ## 1. 目标与范围
 
-一个纯 HTTP 的正向代理录制 + 离线重放工具，单二进制 `box-proxy`，两个子命令：
+一个纯 HTTP 的正向代理录制 + 离线重放工具，单二进制 `tape`，两个子命令：
 
-- `box-proxy record`：本地正向 HTTP 代理，录制 APP 全部 HTTP 流量到磁盘（原样保留，不做任何改写）。
-- `box-proxy replay`：本地离线重放服务，按 method+path 匹配快照，返回改写后的响应与本地静态资源；零外网、零专网。
+- `tape record`：本地正向 HTTP 代理，录制 APP 全部 HTTP 流量到磁盘（原样保留，不做任何改写）。
+- `tape replay`：本地离线重放服务，按 method+path 匹配快照，返回改写后的响应与本地静态资源；零外网、零专网。
 
 明确不做：HTTPS/证书/CONNECT、HTTP/2（纯 HTTP 场景客户端均为 HTTP/1.1）、可视化界面。
 
@@ -21,20 +21,20 @@
 ## 3. CLI 与配置
 
 ```
-box-proxy record [-p/--port 8888] [-d/--dir ./box-proxy-api] [--rewrite-on-record] [-v]
-box-proxy replay [-p/--port 8080] [-d/--dir ./box-proxy-api]
+tape record [-p/--port 8888] [-d/--dir ./tape-api] [--rewrite-on-record] [-v]
+tape replay [-p/--port 8080] [-d/--dir ./tape-api]
                  [--rewrite relative|absolute|none] [--absolute-base http://127.0.0.1:8080/] [-v]
 ```
 
-- `--dir` 两个命令均支持，默认 `./box-proxy-api`（相对当前工作目录）。
-- 目录支持软链接：代码只按路径读写（`std::fs` 默认跟随软链接），用户可通过把 `box-proxy-api` 软链到不同已录制目录来切换数据源。
+- `--dir` 两个命令均支持，默认 `./tape-api`（相对当前工作目录）。
+- 目录支持软链接：代码只按路径读写（`std::fs` 默认跟随软链接），用户可通过把 `tape-api` 软链到不同已录制目录来切换数据源。
 - `record` 在目录不存在时创建；`replay` 目录不存在时直接报错退出。
 - `-v` 可重复，控制 tracing 日志级别。
 
 ## 4. 磁盘布局
 
 ```
-box-proxy-api/
+tape-api/
 ├── session.json                  # 会话元数据：录制时间、工具版本、origin 列表、快照数
 ├── snapshots/
 │   └── <origin_host_port>/       # origin 目录名：host_port（冒号替换为下划线）
@@ -144,5 +144,5 @@ pub struct ResponseRecord {
 
 ## 12. 交付与安装
 
-- `cargo install --path .` 安装到全局 PATH（`~/.cargo/bin/box-proxy`）。
+- `cargo install --path .` 安装到全局 PATH（`~/.cargo/bin/tape`）。
 - 文档：README.md 说明两种模式用法、目录结构与软链接切换方法。

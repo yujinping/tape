@@ -1,19 +1,23 @@
 [package]
-name = "box-proxy"
+name = "tape"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
 base64 = "0.23.0"
+brotli = "8.0.4"
 bytes = "1.12.1"
 clap = { version = "4.6.5", features = ["derive"] }
+flate2 = "1.1.9"
 hex = "0.4.3"
 http-body-util = "0.1.4"
 hyper = { version = "1.11.0", features = ["client", "http1", "server"] }
+hyper-rustls = { version = "0.27.9", default-features = false, features = ["http1", "native-tokio", "tls12", "ring"] }
 hyper-util = { version = "0.1.20", features = ["client", "client-legacy", "http1", "tokio"] }
 mime_guess = "2.0.5"
 regex = "1.13.1"
+rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
@@ -29,3 +33,7 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[dev-dependencies]
+rcgen = { version = "0.14.8", default-features = false, features = ["crypto", "ring"] }
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["logging", "tls12", "ring"] }

@@ -32,13 +32,13 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            name: box-proxy-linux-x86_64
+            name: tape-linux-x86_64
             ext: ""
           - os: windows-latest
-            name: box-proxy-windows-x86_64
+            name: tape-windows-x86_64
             ext: ".exe"
           - os: macos-latest
-            name: box-proxy-macos
+            name: tape-macos
             ext: ""
     runs-on: ${{ matrix.os }}
     steps:
@@ -50,5 +50,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: target/release/box-proxy${{ matrix.ext }}
+          path: target/release/tape${{ matrix.ext }}
           if-no-files-found: error
