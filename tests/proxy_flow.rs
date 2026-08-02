@@ -1531,3 +1531,83 @@ async fn record_stores_requested_assets_to_resources() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn compare_end_to_end_reports_missing_and_changed() {
+    use tape::compare::{FeatureMatrix, IgnoreRules, compare_dirs, render_report};
+
+    fn snap(id: &str, url: &str, body: &str, status: u16) -> Snapshot {
+        Snapshot {
+            id: id.to_string(),
+            origin: "http://10.1.2.3:8080".to_string(),
+            recorded_at: "2026-08-02T00:00:00Z".to_string(),
+            duration_ms: 1,
+            request: RequestRecord {
+                method: "POST".to_string(),
+                url: url.to_string(),
+                headers: vec![],
+                body: String::new(),
+                body_encoding: tape::snapshot::ENCODING_UTF8.to_string(),
+            },
+            response: ResponseRecord {
+                status,
+                headers: vec![],
+                body: body.to_string(),
+                body_encoding: tape::snapshot::ENCODING_UTF8.to_string(),
+            },
+        }
+    }
+
+    let base = temp_dir("compare-base");
+    let curr = temp_dir("compare-curr");
+    // 基线：搜索（kw=电影）+ 首页
+    write_snapshot(
+        &base,
+        &snap(
+            "000001",
+            "http://10.1.2.3:8080/api/search/query?kw=电影",
+            r#"{"list":["a"]}"#,
+            200,
+        ),
+    );
+    write_snapshot(
+        &base,
+        &snap(
+            "000002",
+            "http://10.1.2.3:8080/api/home",
+            r#"{"banners":2}"#,
+            200,
+        ),
+    );
+    // 新版：搜索（kw=电影，响应字段变了）+ 首页缺失
+    write_snapshot(
+        &curr,
+        &snap(
+            "000001",
+            "http://10.1.2.3:8080/api/search/query?kw=电影",
+            r#"{"list":["a","b"]}"#,
+            200,
+        ),
+    );
+
+    let rules = IgnoreRules::default();
+    let result = compare_dirs(&base, &curr, &rules).unwrap();
+    let matrix = serde_json::json!({
+        "module": "首页",
+        "entries": [
+            {"id": "s", "name": "搜索流程", "steps": [
+                {"action": "搜索", "apis": [{"method": "POST", "path": "/api/search/query"}]}
+            ]},
+            {"id": "h", "name": "首页加载", "steps": [
+                {"action": "进首页", "apis": [{"method": "POST", "path": "/api/home"}]}
+            ]}
+        ]
+    });
+    let matrix: FeatureMatrix = serde_json::from_value(matrix).unwrap();
+    let md = render_report("基线", "新版", &result, Some(&matrix));
+    assert!(md.contains("缺失"), "报告应有汇总: {md}");
+    assert!(md.contains("❌ 搜索流程"), "搜索响应变更应标问题: {md}");
+    assert!(md.contains("$.list"), "差异应定位到字段: {md}");
+    let _ = std::fs::remove_dir_all(&base);
+    let _ = std::fs::remove_dir_all(&curr);
+}

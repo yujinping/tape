@@ -216,7 +216,28 @@ pub fn compare_dirs(
         baseline.len(),
         current.len()
     );
-    Ok(align_calls(&baseline, &current, rules))
+    let mut comparisons = align_calls(&baseline, &current, rules);
+    // 对 Matched 项补算状态码 / 响应 diff / 请求 diff
+    for c in &mut comparisons {
+        if c.kind != MatchKind::Matched {
+            continue;
+        }
+        let (b, cur) = (c.baseline.as_ref().unwrap(), c.current.as_ref().unwrap());
+        if b.status != cur.status {
+            c.status_diff = Some((b.status, cur.status));
+        }
+        let base_body = crate::snapshot::decode_body(&b.response_body, &b.response_body_encoding);
+        let curr_body =
+            crate::snapshot::decode_body(&cur.response_body, &cur.response_body_encoding);
+        if let (Ok(bv), Ok(cv)) = (
+            serde_json::from_slice::<Value>(&base_body),
+            serde_json::from_slice::<Value>(&curr_body),
+        ) {
+            c.response_diffs = diff_json(&bv, &cv, "$", rules);
+        }
+        c.request_diff = request_diff(b, cur);
+    }
+    Ok(comparisons)
 }
 
 fn load_records(dir: &Path) -> Result<Vec<CallRecord>> {
@@ -619,27 +640,7 @@ pub fn run(
     output: Option<&Path>,
 ) -> Result<()> {
     let rules = IgnoreRules::load(ignore_path)?;
-    let mut comparisons = compare_dirs(baseline_dir, current_dir, &rules)?;
-    // 对 Matched 项补算状态码 / 响应 diff / 请求 diff
-    for c in &mut comparisons {
-        if c.kind != MatchKind::Matched {
-            continue;
-        }
-        let (b, cur) = (c.baseline.as_ref().unwrap(), c.current.as_ref().unwrap());
-        if b.status != cur.status {
-            c.status_diff = Some((b.status, cur.status));
-        }
-        let base_body = crate::snapshot::decode_body(&b.response_body, &b.response_body_encoding);
-        let curr_body =
-            crate::snapshot::decode_body(&cur.response_body, &cur.response_body_encoding);
-        if let (Ok(bv), Ok(cv)) = (
-            serde_json::from_slice::<Value>(&base_body),
-            serde_json::from_slice::<Value>(&curr_body),
-        ) {
-            c.response_diffs = diff_json(&bv, &cv, "$", &rules);
-        }
-        c.request_diff = request_diff(b, cur);
-    }
+    let comparisons = compare_dirs(baseline_dir, current_dir, &rules)?;
 
     let matrix = load_matrix(matrix_path)?;
     let report = render_report(
