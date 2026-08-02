@@ -402,6 +402,46 @@ fn value_summary(v: &Value) -> String {
     }
 }
 
+/// 对比两次调用的请求（query + body），返回人类可读差异描述；一致返回 None。
+pub fn request_diff(base: &CallRecord, current: &CallRecord) -> Option<String> {
+    let mut parts = Vec::new();
+    if base.query != current.query {
+        parts.push(format!(
+            "query: {} → {}",
+            format_query(&base.query),
+            format_query(&current.query)
+        ));
+    }
+    if base.request_body != current.request_body {
+        parts.push(format!(
+            "body: {} → {}",
+            summarize_body(&base.request_body),
+            summarize_body(&current.request_body)
+        ));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("；"))
+    }
+}
+
+fn format_query(query: &[(String, String)]) -> String {
+    query
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn summarize_body(body: &str) -> String {
+    if body.len() > 120 {
+        format!("{}…", &body[..120])
+    } else {
+        body.to_string()
+    }
+}
+
 /// `tape compare` 主流程：完整实现由任务 7 填充。
 pub fn run(
     _baseline: &Path,
@@ -583,5 +623,24 @@ mod tests {
             !diffs.iter().any(|d| d.path.contains("[0].id")),
             "list[*].id 应被忽略: {diffs:?}"
         );
+    }
+
+    #[test]
+    fn request_diff_detects_param_and_body_changes() {
+        let b = CallRecord::from_snapshot(&call(
+            "000001",
+            "http://10.1.2.3:8080/api/search?kw=电影",
+            r#"{"kw":"电影"}"#,
+        ));
+        let c = CallRecord::from_snapshot(&call(
+            "000002",
+            "http://10.1.2.3:8080/api/search?kw=电视剧",
+            r#"{"kw":"电视剧"}"#,
+        ));
+        let diff = request_diff(&b, &c);
+        assert!(diff.is_some(), "query 变化应产生请求差异");
+        let text = diff.unwrap();
+        assert!(text.contains("kw=电影"), "应指出基线参数: {text}");
+        assert!(text.contains("kw=电视剧"), "应指出新版参数: {text}");
     }
 }
