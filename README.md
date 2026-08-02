@@ -24,6 +24,7 @@ tape 面向电视盒子、大屏与 Android 设备的**开发与调试**场景�
 - **录制保真**：录制阶段原样回传响应（100% 保真），快照保存原始请求 / 响应，支持手工编辑，重放即时生效。
 - **设备调试日志**：`tape logcat` 纯 CLI 实时查看 Android 设备日志（级别 / 关键词过滤、终端彩色输出），每次会话自动落盘带时间戳的 `.log` 文件，无需额外抓取工具。
 - **console 日志接收**：`tape console` 起一个 HTTP 服务，盒子 WebView / 网页通过 GET / POST 推送 `console.log` 等调试日志，带 CORS、即时落盘 `console-YYYYMMDD-HHMMSS.log`。
+- **应用网络日志接收**：`tape app` 接收无法使用 logcat 的盒子应用推送的应用内日志 / 网络事件（GET / POST），即时落盘 `app-YYYYMMDD-HHMMSS.log`；与 console 共用同一套接收组件。
 
 ## 目录
 
@@ -39,6 +40,7 @@ tape 面向电视盒子、大屏与 Android 设备的**开发与调试**场景�
 - [命令行参数](#命令行参数)
 - [logcat：Android 日志实时查看与自动落盘](#logcatandroid-日志实时查看与自动落盘)
 - [console：盒子 WebView 调试日志接收](#console盒子-webview-调试日志接收)
+- [app：盒子应用网络日志接收](#app盒子应用网络日志接收)
 - [跨平台支持（Windows / macOS / Linux）](#跨平台支持windows--macos--linux)
 - [路线图（Roadmap）](#路线图roadmap)
 - [开发](#开发)
@@ -277,6 +279,7 @@ tape replay [--port 8888] [--dir ./tape-api] [--config tape-config.toml]
 tape list [--dir ./tape-api]
 tape logcat [-s SERIAL] [-l LEVEL] [--search KEYWORD] [--log-dir ./logs] [--no-color] [-v]
 tape console [--port 8899] [--log-dir ./logs] [--no-color] [-v]
+tape app [--port 8900] [--log-dir ./logs] [--no-color] [-v]
 ```
 
 - `--config`：record / replay 共用配置文件。未指定时默认读取数据目录下的 `tape-config.toml`；该文件不存在时 record 录制全部、replay 使用内置默认值；显式指定则必须存在且合法。
@@ -285,6 +288,7 @@ tape console [--port 8899] [--log-dir ./logs] [--no-color] [-v]
 - `--rewrite-on-record`：录制时同步改写回传给 App 的响应（默认关闭，避免影响公司网络下的实时会话）。
 - `tape logcat`：实时查看 Android logcat 日志并按级别 / 关键词过滤，同时自动落盘为 `{log-dir}/logcat-YYYYMMDD-HHMMSS.log`（纯文本、无颜色，便于事后检索）。详见下文 [logcat](#logcatandroid-日志实时查看与自动落盘)。
 - `tape console`：启动 HTTP 服务接收盒子 WebView / 网页推送的调试日志（GET / POST），自动落盘为 `{log-dir}/console-YYYYMMDD-HHMMSS.log`。详见下文 [console](#console盒子-webview-调试日志接收)。
+- `tape app`：启动 HTTP 服务接收盒子应用推送的应用内日志 / 网络事件（GET / POST），自动落盘为 `{log-dir}/app-YYYYMMDD-HHMMSS.log`。详见下文 [app](#app盒子应用网络日志接收)。
 
 ## logcat：Android 日志实时查看与自动落盘
 
@@ -299,7 +303,7 @@ tape logcat --log-dir /tmp/logs --no-color > logcat.txt   # 重定向到文件�
 - **设备选择**：缺省使用 `adb devices` 的第一台在线设备；多设备用 `-s/--serial` 指定串号。
 - **级别过滤**：`-l/--level` 为最小级别（V/D/I/W/E/F），缺省 V 显示全部；`--search` 关键词匹配 tag / message / pid / tid，大小写不敏感。
 - **自动落盘**：每次启动都会新建带时间戳的文件 `logcat-YYYYMMDD-HHMMSS.log`（本地时间），内容为纯文本、无 ANSI 颜色；写文件失败时降级为仅终端打印并告警。
-- **落盘命名规范**：各日志源按前缀区分、共用一个 `--log-dir`——`logcat-`（设备日志）、`console-`（WebView console 推送）、`app-`（盒子应用网络日志，规划中），均为 `{prefix}-YYYYMMDD-HHMMSS.log`。
+- **落盘命名规范**：各日志源按前缀区分、共用一个 `--log-dir`——`logcat-`（设备日志）、`console-`（WebView console 推送）、`app-`（盒子应用网络日志），均为 `{prefix}-YYYYMMDD-HHMMSS.log`。
 - **停止**：Ctrl-C 优雅停止，会打印日志保存路径。
 - **前置条件**：本机需安装 adb 并加入 PATH（`adb devices` 能列出设备），tape 通过 `adb -s <serial> logcat -v threadtime` 读取。
 - **数据安全**：logcat 仅通过 adb 读取，不上传任何内容；日志文件仅保存在 `--log-dir` 指定的本地目录。
@@ -341,6 +345,25 @@ fetch('http://<tape-ip>:8899/', {
 - **终端输出**：实时打印并按级别着色；管道重定向自动去色（`--no-color` 强制）。
 - **停止**：Ctrl-C 优雅停止，打印日志保存路径。
 
+## app：盒子应用网络日志接收
+
+`tape app` 接收**无法使用 logcat** 的盒子应用推送的应用内日志 / 网络事件（例如盒子固件没有 adb、或应用内埋点想直接上报），即时落盘 `{log-dir}/app-YYYYMMDD-HHMMSS.log`。与 `console` 共用同一套 HTTP 接收组件，**推送协议完全相同**（GET / POST / JSON / 表单 / 纯文本，见上文 [console](#console盒子-webview-调试日志接收)），只是监听端口与落盘前缀不同：
+
+```bash
+tape app                              # 默认监听 0.0.0.0:8900，落盘 ./logs/app-YYYYMMDD-HHMMSS.log
+tape app --port 9100 --log-dir /tmp/logs
+```
+
+应用内上报示例（OkHttp / HttpURLConnection 均可，带 CORS 支持网页端跨域）：
+
+```text
+POST http://<tape-ip>:8900/   Content-Type: application/json
+{"level":"error","message":"token 失效","tag":"auth","url":"","line":0}
+```
+
+- **端口规划**：`record` / `replay` = `8888`、`console` = `8899`、`app` = `8900`，互不冲突，可同时运行。
+- 同样支持 GET query、POST 纯文本 / 表单 / JSON，级别着色终端输出，Ctrl-C 优雅停止并打印保存路径。
+
 ## 跨平台支持（Windows / macOS / Linux）
 
 - 代码完全跨平台（tokio + hyper，无平台相关依赖），快照 / 资源目录可在任意平台间拷贝迁移复用。
@@ -368,7 +391,7 @@ tape 会持续围绕盒子开发 / 调试场景补齐能力，规划中的功能
 
 - **WebView console 日志接收** ✅ 已实现（`tape console`）：盒子内 WebView / 网页通过 GET / POST 推送 `console.log` 等，统一落盘查看。
 - **console 日志即时落盘** ✅ 已实现：推送按时间戳即时写入 `console-YYYYMMDD-HHMMSS.log`。
-- **盒子应用网络日志**（规划中）：无法使用 logcat 的盒子应用，把应用内日志 / 网络事件通过 HTTP POST 推送到 tape，落盘为 `app-YYYYMMDD-HHMMSS.log`。
+- **盒子应用网络日志** ✅ 已实现（`tape app`）：无法使用 logcat 的盒子应用，把应用内日志 / 网络事件通过 GET / POST 推送到 tape，落盘为 `app-YYYYMMDD-HHMMSS.log`。
 - 更多盒子调试辅助能力持续补充（欢迎通过 issue 提需求）。
 
 ## 开发

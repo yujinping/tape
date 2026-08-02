@@ -27,6 +27,8 @@ pub enum Command {
     Logcat(LogcatArgs),
     /// 接收盒子 WebView / 网页推送的调试日志（GET/POST）并自动落盘
     Console(ConsoleArgs),
+    /// 接收盒子应用推送的网络日志（GET/POST，无法用 logcat 时）并自动落盘
+    App(AppArgs),
 }
 
 #[derive(Args)]
@@ -102,6 +104,22 @@ pub struct LogcatArgs {
     #[arg(long)]
     pub search: Option<String>,
     /// 日志落盘目录（默认当前目录下 logs，文件为 logcat-YYYYMMDD-HHMMSS.log）
+    #[arg(long, default_value = "./logs")]
+    pub log_dir: PathBuf,
+    /// 禁用终端彩色输出（管道重定向时自动禁用，无需手动加）
+    #[arg(long)]
+    pub no_color: bool,
+    /// 日志详细程度（可重复 -v）
+    #[arg(short, long, action = ArgAction::Count)]
+    pub verbose: u8,
+}
+
+#[derive(Args)]
+pub struct AppArgs {
+    /// 接收服务监听端口（默认 8900，与 record/replay 的 8888、console 的 8899 区分开）
+    #[arg(short, long, default_value_t = 8900)]
+    pub port: u16,
+    /// 日志落盘目录（默认当前目录下 logs，文件为 app-YYYYMMDD-HHMMSS.log）
     #[arg(long, default_value = "./logs")]
     pub log_dir: PathBuf,
     /// 禁用终端彩色输出（管道重定向时自动禁用，无需手动加）

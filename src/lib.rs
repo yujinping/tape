@@ -1,8 +1,10 @@
+pub mod app;
 pub mod cli;
 pub mod config;
 pub mod console;
 pub mod download;
 pub mod http_util;
+pub mod ingest;
 pub mod list;
 pub mod log_file;
 pub mod logcat;

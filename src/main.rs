@@ -1,7 +1,7 @@
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use tape::{cli, config, console, list, logcat, record, replay};
+use tape::{app, cli, config, console, list, logcat, record, replay};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -32,6 +32,10 @@ async fn main() -> anyhow::Result<()> {
         cli::Command::Console(args) => {
             init_tracing(args.verbose);
             console::run(args).await
+        }
+        cli::Command::App(args) => {
+            init_tracing(args.verbose);
+            app::run(args).await
         }
     }
 }
