@@ -8,9 +8,13 @@ tape 在「公司专网 / 有网环境」下将 App 的全部 HTTP 请求与响�
 
 ## 本版本变更
 
-- 新增 `release.sh` 一键发版脚本：bump 版本 → 自动生成 CHANGELOG → 提交 → 打 tag → 推送触发 CI 发布，全程一条命令。
-- 引入 git-cliff 自动生成 `CHANGELOG.md`（按 Conventional Commits 分组，含 Release 链接）。
-- README 补充发布新版本流程说明。
+- **修复**：重放时带 query 参数的代理式 / 前缀式请求全部 404 的问题——快照与资源索引按「去 query 的路径」匹配，与录制侧一致（此前带 query 的接口在离线重放时会 MISS）。
+- **修复**：静态资源索引改为按「origin + path」精确匹配，多站点同路径资源不再互相串站；页面引用的跨域 CDN 资源按自身域名归属。
+- **修复**：重复录制同一数据目录时，快照序号从已有最大 id 续起，不再回到 `000001` 静默覆盖旧快照。
+- **性能**：录制落盘改为增量维护 `session.json` 快照数，消除每次全量重读的 O(n²) 开销。
+- **安全**：`TAPE_INSECURE_TLS` 改为显式白名单（`1` / `true` / `yes` / `on`），`false` 不再误开启跳过证书校验；record / replay 新增 `--bind` 监听地址选项（默认 `0.0.0.0` 不变），可用 `127.0.0.1` 限制仅本机。
+- **完善**：replay 资源路径仅允许 GET / HEAD（其余 405）；非 ASCII 头值按 lossy 保留不再置空；logcat 的 adb 调用不再阻塞异步运行时；日志落盘文件名增加毫秒精度防同秒截断；快照目录区分 http / https；损坏快照与 session.json 写入失败改为告警；无 path 带 query 的 URL 改写不再丢 query。
+- 新增完整代码审查报告 `docs/code-review-2026-08-02.md`（3.1 / 3.2 / 3.3 共 15 项问题全部处理）。
 
 ## 核心亮点
 

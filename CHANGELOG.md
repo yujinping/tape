@@ -1,7 +1,32 @@
 # CHANGELOG
 
 本文件由 [git-cliff](https://git-cliff.org) 依据 Conventional Commits 自动生成，请勿手动编辑。
-## [unreleased](https://github.com/yujinping/tape/compare/vv0.1.1...HEAD)
+## [unreleased](https://github.com/yujinping/tape/compare/vv0.1.2...HEAD)
+
+### 🐛 修复
+
+- 修复代码审查问题（重放 query 匹配、资源串站、重复录制覆盖等 15 项）
+
+### 📚 文档
+
+- 新增代码审查报告，README 补充 --bind/安全/内存限制说明
+- README 定位调整为盒子开发调试工具箱，同步 CLI 帮助文案
+
+### 🚀 新功能
+
+- 新增 app 子命令接收盒子应用网络日志，抽取通用 ingest 组件供 console/app 复用
+- 新增 console 子命令，接收盒子 WebView/网页 GET/POST 调试日志并自动落盘
+- 新增 logcat 子命令（rcat CLI 移植，自动落盘时间戳日志）
+
+### 🚜 重构
+
+- 抽取 log_file 公共落盘模块（logcat-/console-/app- 前缀命名规范）
+- 提取 net 模块承载 HttpClient，消除 record↔download 循环依赖
+## [0.1.2](https://github.com/yujinping/tape/releases/tag/v0.1.2) - 2026-08-01
+
+### 🐛 修复
+
+- *(ci)* Publish job 补充 checkout，修复 Release 正文为空（body_path 读不到文件）
 
 ### 💼 其他
 
@@ -12,6 +37,10 @@
 
 - README 补充一键发版流程说明
 - 引入 git-cliff 自动生成 CHANGELOG
+
+### 🔧 其他
+
+- Release v0.1.2
 ## [0.1.1](https://github.com/yujinping/tape/releases/tag/v0.1.1) - 2026-08-01
 
 ### 🔧 其他
