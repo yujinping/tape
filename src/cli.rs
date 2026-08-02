@@ -5,7 +5,7 @@ use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use crate::config::DEFAULT_PORT;
 
 #[derive(Parser)]
-#[command(name = "tape", version, about = "专网HTTP接口录制与离线重放代理工具")]
+#[command(name = "tape", version, about = "电视盒子 / Android 开发调试工具箱（录制、重放、设备日志）")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,

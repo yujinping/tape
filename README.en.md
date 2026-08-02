@@ -1,10 +1,14 @@
 # tape
 
-HTTP API recording and offline replay proxy for private networks, written in pure Rust.
+A development & debugging toolbox for TV boxes / Android, written in pure Rust.
 
 English | [简体中文](./README.md)
 
-During a session on a corporate intranet, tape records every HTTP request and response made by an app into snapshots and automatically downloads the static assets referenced by pages. Later, in a home / offline environment, tape replays the recorded data from the same address, letting the app reproduce its full UI and API behavior with zero external and zero intranet traffic.
+tape targets the **development and debugging** of TV boxes, large-screen and Android devices: one binary combines API recording / offline replay, live Android logcat viewing with automatic log dumps, and more (WebView console log ingestion is on the roadmap).
+
+- **Development (online)**: on a corporate intranet, tape records every HTTP request and response made by an app into snapshots and automatically downloads the static assets referenced by pages.
+- **Debugging**: view Android device logs in real time with level / keyword filtering; every session is automatically dumped to a timestamped `.log` file for later review.
+- **Offline replay**: serve the recorded snapshots from the same address, letting the app reproduce its full UI and API behavior with zero external and zero intranet traffic.
 
 - **Pure HTTP**: traffic between the app and tape is plain HTTP/1.1 — no certificates to install, no root CA to trust. HTTPS upstreams are connected by tape as a TLS client, decrypted, and recorded.
 - **Pure Rust**: built on tokio + hyper; cross-platform (Windows / macOS / Linux); ships as a single binary with no runtime dependencies.
@@ -23,6 +27,7 @@ During a session on a corporate intranet, tape records every HTTP request and re
 - [Command-line Options](#command-line-options)
 - [logcat: Live Android Logs with Auto-dump](#logcat-live-android-logs-with-auto-dump)
 - [Cross-platform Support](#cross-platform-support-windows--macos--linux)
+- [Roadmap](#roadmap)
 - [Development](#development)
 - [Known Limitations](#known-limitations)
 
@@ -35,11 +40,13 @@ During a session on a corporate intranet, tape records every HTTP request and re
 - **Shared config**: `record` and `replay` share a single TOML config file (recording filters, replay port, rewrite mode); CLI arguments take precedence.
 - **Asset persistence**: static assets requested directly by the app or referenced in responses are downloaded and deduplicated by sha256; replay serves them by path.
 - **Fidelity**: responses are passed through unchanged during recording (100% fidelity); snapshots store the original requests and responses, are human-editable, and take effect immediately on replay.
-- **logcat logs**: `tape logcat` is a pure CLI viewer for Android device logs (level/keyword filtering, colored terminal output) that automatically writes each session to a timestamped `.log` file.
+- **Device debug logs**: `tape logcat` is a pure CLI viewer for Android device logs (level/keyword filtering, colored terminal output) that automatically writes each session to a timestamped `.log` file — no extra log-collection tool needed.
 
 ## Use Cases
 
-### 1. Record on the intranet, replay offline at home
+tape mainly serves the development and debugging of TV-box / large-screen apps: record APIs, capture logs, and replay offline — switching modes is one command and the app's address never changes.
+
+### 1. Box app API recording, offline replay at home
 
 1. Run `tape record` on the corporate intranet, listening on port `8888`. Point the app's HTTP proxy at `192.168.0.100:8888` and exercise the business flows.
 2. Snapshots and assets are written under `tape-api/`; copy the directory home.
@@ -312,6 +319,14 @@ Edit the "本版本变更" (Changes in this release) section of `RELEASE_NOTES.m
 ```
 
 The script bumps the version (`Cargo.toml` / `Cargo.lock`), regenerates `CHANGELOG.md` with git-cliff, commits, tags, and pushes `main` plus the tag. Pushing the tag triggers CI to build the three platform binaries, create the Release (body from `RELEASE_NOTES.md`), and attach the assets — no manual web steps.
+
+## Roadmap
+
+tape keeps expanding around TV-box development / debugging. Planned features:
+
+- **WebView console log ingestion**: WebView / web pages inside the box push `console.log`, `console.error`, etc. to a unified tape endpoint via POST, viewable and filterable together with logcat.
+- **Instant console log dumps**: received console messages are written immediately to a timestamped `{log-dir}/console-YYYYMMDD-HHMMSS.log`, matching the logcat dump experience for later troubleshooting.
+- More box-debugging helpers will keep being added (feature requests welcome via issues).
 
 ## Development
 
