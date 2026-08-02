@@ -442,15 +442,240 @@ fn summarize_body(body: &str) -> String {
     }
 }
 
-/// `tape compare` 主流程：完整实现由任务 7 填充。
+/// 矩阵 JSON：`{ module, entries: [{ id, name, steps: [{ action, apis: [{method,path}] }] }] }`
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FeatureMatrix {
+    pub module: String,
+    pub entries: Vec<MatrixEntry>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MatrixEntry {
+    pub id: String,
+    pub name: String,
+    pub steps: Vec<MatrixStep>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MatrixStep {
+    pub action: String,
+    pub apis: Vec<MatrixApi>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MatrixApi {
+    pub method: String,
+    pub path: String,
+}
+
+fn load_matrix(path: Option<&Path>) -> Result<Option<FeatureMatrix>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("无法读取功能矩阵 {}", path.display()))?;
+    let m: FeatureMatrix = serde_json::from_str(&text)
+        .with_context(|| format!("功能矩阵 JSON 解析失败 {}", path.display()))?;
+    Ok(Some(m))
+}
+
+/// 渲染 Markdown 报告：按矩阵功能条目组织；无矩阵时按 path 组织。
+pub fn render_report(
+    baseline_name: &str,
+    current_name: &str,
+    comparisons: &[CallComparison],
+    matrix: Option<&FeatureMatrix>,
+) -> String {
+    let mut md = String::new();
+    md.push_str(&format!(
+        "# 接口复刻对比报告\n\n基线：{baseline_name}　新版：{current_name}\n\n"
+    ));
+
+    let missing = comparisons
+        .iter()
+        .filter(|c| c.kind == MatchKind::Missing)
+        .count();
+    let added = comparisons
+        .iter()
+        .filter(|c| c.kind == MatchKind::Added)
+        .count();
+    let changed = comparisons
+        .iter()
+        .filter(|c| {
+            c.kind == MatchKind::Matched
+                && (c.status_diff.is_some() || !c.response_diffs.is_empty())
+        })
+        .count();
+    let identical = comparisons
+        .iter()
+        .filter(|c| {
+            c.kind == MatchKind::Matched && c.status_diff.is_none() && c.response_diffs.is_empty()
+        })
+        .count();
+    md.push_str(&format!(
+        "## 汇总\n\n- 一致：{identical}\n- 变更：{changed}\n- 缺失：{missing}\n- 新增：{added}\n\n"
+    ));
+
+    if let Some(m) = matrix {
+        md.push_str("## 按功能条目\n\n");
+        for entry in &m.entries {
+            let entry_apis: Vec<&MatrixApi> =
+                entry.steps.iter().flat_map(|s| s.apis.iter()).collect();
+            let relevant: Vec<&CallComparison> = comparisons
+                .iter()
+                .filter(|c| {
+                    entry_apis
+                        .iter()
+                        .any(|a| a.method.eq_ignore_ascii_case(&c.method) && a.path == c.path)
+                })
+                .collect();
+            let has_issue = relevant.iter().any(|c| {
+                c.kind == MatchKind::Missing
+                    || c.kind == MatchKind::Added
+                    || c.status_diff.is_some()
+                    || !c.response_diffs.is_empty()
+            });
+            let icon = if relevant.is_empty() {
+                "⚠️"
+            } else if has_issue {
+                "❌"
+            } else {
+                "✅"
+            };
+            md.push_str(&format!("### {icon} {}（{}）\n\n", entry.name, entry.id));
+            if relevant.is_empty() {
+                md.push_str("- 未捕获到该功能的接口调用\n");
+            }
+            for c in &relevant {
+                md.push_str(&format!("- `{} {}`\n", c.method, c.path));
+                if c.kind == MatchKind::Missing {
+                    md.push_str("  - **缺失**：新版未调用该接口\n");
+                }
+                if c.kind == MatchKind::Added {
+                    md.push_str("  - **新增**：新版多出该调用\n");
+                }
+                if let Some((b, cc)) = c.status_diff {
+                    md.push_str(&format!("  - 状态码：{b} → {cc}\n"));
+                }
+                for d in &c.response_diffs {
+                    md.push_str(&format!(
+                        "  - 响应 {} `{}`：{:?} → {:?}\n",
+                        if d.kind == DiffKind::Structure {
+                            "结构"
+                        } else {
+                            "值"
+                        },
+                        d.path,
+                        d.baseline,
+                        d.current
+                    ));
+                }
+                if let Some(rd) = &c.request_diff {
+                    md.push_str(&format!("  - 请求差异：{rd}\n"));
+                }
+            }
+            md.push('\n');
+        }
+    } else {
+        md.push_str("## 差异详情\n\n");
+        for c in comparisons {
+            if c.kind == MatchKind::Missing {
+                md.push_str(&format!("- ❌ 缺失 `{} {}`\n", c.method, c.path));
+            } else if c.kind == MatchKind::Added {
+                md.push_str(&format!("- ➕ 新增 `{} {}`\n", c.method, c.path));
+            } else if c.status_diff.is_some() || !c.response_diffs.is_empty() {
+                md.push_str(&format!("- 🔄 变更 `{} {}`\n", c.method, c.path));
+                if let Some((b, cc)) = c.status_diff {
+                    md.push_str(&format!("  - 状态码：{b} → {cc}\n"));
+                }
+                for d in &c.response_diffs {
+                    md.push_str(&format!(
+                        "  - 响应 {} `{}`：{:?} → {:?}\n",
+                        if d.kind == DiffKind::Structure {
+                            "结构"
+                        } else {
+                            "值"
+                        },
+                        d.path,
+                        d.baseline,
+                        d.current
+                    ));
+                }
+                if let Some(rd) = &c.request_diff {
+                    md.push_str(&format!("  - 请求差异：{rd}\n"));
+                }
+            }
+        }
+    }
+    md
+}
+
+/// `tape compare` 主流程：加载 → 对齐 → 计算 Matched 项差异 → 渲染报告。
 pub fn run(
-    _baseline: &Path,
-    _current: &Path,
-    _matrix: Option<&Path>,
-    _ignore: Option<&Path>,
-    _output: Option<&Path>,
+    baseline_dir: &Path,
+    current_dir: &Path,
+    matrix_path: Option<&Path>,
+    ignore_path: Option<&Path>,
+    output: Option<&Path>,
 ) -> Result<()> {
-    unimplemented!("tape compare 由 M1 任务 3-7 实现")
+    let rules = IgnoreRules::load(ignore_path)?;
+    let mut comparisons = compare_dirs(baseline_dir, current_dir, &rules)?;
+    // 对 Matched 项补算状态码 / 响应 diff / 请求 diff
+    for c in &mut comparisons {
+        if c.kind != MatchKind::Matched {
+            continue;
+        }
+        let (b, cur) = (c.baseline.as_ref().unwrap(), c.current.as_ref().unwrap());
+        if b.status != cur.status {
+            c.status_diff = Some((b.status, cur.status));
+        }
+        let base_body = crate::snapshot::decode_body(&b.response_body, &b.response_body_encoding);
+        let curr_body =
+            crate::snapshot::decode_body(&cur.response_body, &cur.response_body_encoding);
+        if let (Ok(bv), Ok(cv)) = (
+            serde_json::from_slice::<Value>(&base_body),
+            serde_json::from_slice::<Value>(&curr_body),
+        ) {
+            c.response_diffs = diff_json(&bv, &cv, "$", &rules);
+        }
+        c.request_diff = request_diff(b, cur);
+    }
+
+    let matrix = load_matrix(matrix_path)?;
+    let report = render_report(
+        &baseline_dir.display().to_string(),
+        &current_dir.display().to_string(),
+        &comparisons,
+        matrix.as_ref(),
+    );
+
+    // 终端摘要
+    let missing = comparisons
+        .iter()
+        .filter(|c| c.kind == MatchKind::Missing)
+        .count();
+    let added = comparisons
+        .iter()
+        .filter(|c| c.kind == MatchKind::Added)
+        .count();
+    let changed = comparisons
+        .iter()
+        .filter(|c| {
+            c.kind == MatchKind::Matched
+                && (c.status_diff.is_some() || !c.response_diffs.is_empty())
+        })
+        .count();
+    let identical = comparisons.len() - missing - added - changed;
+    println!("对比完成：一致 {identical}，变更 {changed}，缺失 {missing}，新增 {added}");
+
+    if let Some(path) = output {
+        std::fs::write(path, &report)
+            .with_context(|| format!("无法写入报告 {}", path.display()))?;
+        println!("报告已保存: {}", path.display());
+    } else {
+        println!("{report}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -642,5 +867,40 @@ mod tests {
         let text = diff.unwrap();
         assert!(text.contains("kw=电影"), "应指出基线参数: {text}");
         assert!(text.contains("kw=电视剧"), "应指出新版参数: {text}");
+    }
+
+    #[test]
+    fn report_groups_by_matrix_entries() {
+        let rules = IgnoreRules::default();
+        let base = vec![
+            CallRecord::from_snapshot(&call(
+                "000001",
+                "http://10.1.2.3:8080/api/search/query?kw=电影",
+                "",
+            )),
+            CallRecord::from_snapshot(&call("000002", "http://10.1.2.3:8080/api/home", "")),
+        ];
+        let curr = vec![CallRecord::from_snapshot(&call(
+            "000001",
+            "http://10.1.2.3:8080/api/search/query?kw=电影",
+            "",
+        ))];
+        let result = align_calls(&base, &curr, &rules);
+        let matrix = serde_json::json!({
+            "module": "首页",
+            "entries": [
+                {"id": "home-search", "name": "搜索流程", "steps": [
+                    {"action": "点击搜索", "apis": [{"method": "POST", "path": "/api/search/query"}]}
+                ]},
+                {"id": "home-main", "name": "首页加载", "steps": [
+                    {"action": "进入首页", "apis": [{"method": "POST", "path": "/api/home"}]}
+                ]}
+            ]
+        });
+        let matrix: FeatureMatrix = serde_json::from_value(matrix).unwrap();
+        let md = render_report("基线-旧版", "新版", &result, Some(&matrix));
+        assert!(md.contains("搜索流程"), "报告应按功能条目组织: {md}");
+        assert!(md.contains("首页加载"), "报告应包含未缺失条目: {md}");
+        assert!(md.contains("缺失"), "报告应含三分类汇总: {md}");
     }
 }
