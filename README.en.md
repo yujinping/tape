@@ -295,6 +295,7 @@ tape logcat --log-dir /tmp/logs --no-color > logcat.txt   # redirect to a file (
 - **Device selection**: defaults to the first online device from `adb devices`; use `-s/--serial` with multiple devices.
 - **Level filter**: `-l/--level` is the minimum level (V/D/I/W/E/F, default V = all); `--search` matches tag / message / pid / tid, case-insensitive.
 - **Auto-dump**: every run creates a timestamped `logcat-YYYYMMDD-HHMMSS.log` (local time) with plain text (no ANSI colors); if writing fails, tape degrades to terminal-only output and warns.
+- **Dump naming convention**: log sources are distinguished by prefix and share one `--log-dir` — `logcat-` (device logs), `console-` (WebView console pushes, planned), `app-` (box app network logs, planned), all as `{prefix}-YYYYMMDD-HHMMSS.log`.
 - **Stop**: Ctrl-C stops gracefully and prints the saved log path.
 - **Prerequisite**: adb must be installed and on PATH (`adb devices` must list the device); tape reads via `adb -s <serial> logcat -v threadtime`.
 - **Privacy**: logs are read locally through adb and never uploaded; files stay under `--log-dir`.
@@ -326,6 +327,7 @@ tape keeps expanding around TV-box development / debugging. Planned features:
 
 - **WebView console log ingestion**: WebView / web pages inside the box push `console.log`, `console.error`, etc. to a unified tape endpoint via POST, viewable and filterable together with logcat.
 - **Instant console log dumps**: received console messages are written immediately to a timestamped `{log-dir}/console-YYYYMMDD-HHMMSS.log`, matching the logcat dump experience for later troubleshooting.
+- **Box app network logs**: boxes that cannot use logcat push their in-app logs / network events to tape via HTTP POST, dumped as `app-YYYYMMDD-HHMMSS.log`.
 - More box-debugging helpers will keep being added (feature requests welcome via issues).
 
 ## Development

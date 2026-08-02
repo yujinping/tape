@@ -3,6 +3,7 @@ pub mod config;
 pub mod download;
 pub mod http_util;
 pub mod list;
+pub mod log_file;
 pub mod logcat;
 pub mod net;
 pub mod record;

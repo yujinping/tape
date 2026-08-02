@@ -295,6 +295,7 @@ tape logcat --log-dir /tmp/logs --no-color > logcat.txt   # 重定向到文件�
 - **设备选择**：缺省使用 `adb devices` 的第一台在线设备；多设备用 `-s/--serial` 指定串号。
 - **级别过滤**：`-l/--level` 为最小级别（V/D/I/W/E/F），缺省 V 显示全部；`--search` 关键词匹配 tag / message / pid / tid，大小写不敏感。
 - **自动落盘**：每次启动都会新建带时间戳的文件 `logcat-YYYYMMDD-HHMMSS.log`（本地时间），内容为纯文本、无 ANSI 颜色；写文件失败时降级为仅终端打印并告警。
+- **落盘命名规范**：各日志源按前缀区分、共用一个 `--log-dir`——`logcat-`（设备日志）、`console-`（WebView console 推送，规划中）、`app-`（盒子应用网络日志，规划中），均为 `{prefix}-YYYYMMDD-HHMMSS.log`。
 - **停止**：Ctrl-C 优雅停止，会打印日志保存路径。
 - **前置条件**：本机需安装 adb 并加入 PATH（`adb devices` 能列出设备），tape 通过 `adb -s <serial> logcat -v threadtime` 读取。
 - **数据安全**：logcat 仅通过 adb 读取，不上传任何内容；日志文件仅保存在 `--log-dir` 指定的本地目录。
@@ -326,6 +327,7 @@ tape 会持续围绕盒子开发 / 调试场景补齐能力，规划中的功能
 
 - **WebView console 日志接收**：盒子内 WebView / 网页把 `console.log`、`console.error` 等通过 POST 推送到 tape 的统一入口，与 logcat 一起查看、过滤。
 - **console 日志即时落盘**：收到的 console 推送按时间戳即时写入 `{log-dir}/console-YYYYMMDD-HHMMSS.log`，与 logcat 一致的落盘体验，便于事后回溯页面问题。
+- **盒子应用网络日志**：无法使用 logcat 的盒子应用，把应用内日志 / 网络事件通过 HTTP POST 推送到 tape，落盘为 `app-YYYYMMDD-HHMMSS.log`。
 - 更多盒子调试辅助能力持续补充（欢迎通过 issue 提需求）。
 
 ## 开发

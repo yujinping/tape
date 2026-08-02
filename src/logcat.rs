@@ -166,15 +166,6 @@ impl Drop for LogcatReader {
     }
 }
 
-/// 落盘文件名时间戳：`YYYYMMDD-HHMMSS`（本地时间，失败时回退 UTC）。
-fn log_file_stamp() -> String {
-    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
-    now.format(&time::macros::format_description!(
-        "[year][month][day]-[hour][minute][second]"
-    ))
-    .unwrap_or_else(|_| "unknown".to_string())
-}
-
 /// `tape logcat` 主流程。
 pub async fn run(args: LogcatArgs) -> Result<()> {
     let color = !args.no_color && std::io::stdout().is_terminal();
@@ -200,9 +191,7 @@ pub async fn run(args: LogcatArgs) -> Result<()> {
     // 3. 创建落盘文件：{log-dir}/logcat-YYYYMMDD-HHMMSS.log
     std::fs::create_dir_all(&args.log_dir)
         .with_context(|| format!("无法创建日志目录 {}", args.log_dir.display()))?;
-    let log_path = args
-        .log_dir
-        .join(format!("logcat-{}.log", log_file_stamp()));
+    let log_path = crate::log_file::path(&args.log_dir, "logcat");
     let mut file = match std::fs::File::create(&log_path) {
         Ok(f) => Some(f),
         Err(e) => {
@@ -314,13 +303,5 @@ mod tests {
         assert!(level_rank("I") < level_rank("W"));
         assert!(level_rank("W") < level_rank("E"));
         assert!(level_rank("E") < level_rank("F"));
-    }
-
-    #[test]
-    fn log_file_stamp_shape() {
-        let stamp = log_file_stamp();
-        assert_eq!(stamp.len(), 15, "expected YYYYMMDD-HHMMSS, got {stamp}");
-        assert_eq!(&stamp[8..9], "-");
-        assert!(stamp.chars().all(|c| c.is_ascii_digit() || c == '-'));
     }
 }
