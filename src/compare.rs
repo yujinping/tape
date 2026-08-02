@@ -105,8 +105,10 @@ impl IgnoreRules {
                 return true;
             }
             if rule.contains("[*]") {
-                let pattern = rule.replace("[*]", r"\[\d+\]");
-                if let Ok(re) = regex::Regex::new(&format!("^{pattern}$")) {
+                // 先整体转义正则特殊字符（如 $ 锚点），再把 [*] 替换成匹配任意数字下标的模式
+                let escaped = regex::escape(rule);
+                let pattern = escaped.replace(r"\[\*\]", r"\[\d+\]");
+                if let Ok(re) = regex::Regex::new(&pattern) {
                     return re.is_match(path);
                 }
             }
@@ -320,6 +322,86 @@ fn numeric_id(id: &str) -> u64 {
     id.parse::<u64>().unwrap_or(u64::MAX)
 }
 
+/// 递归对比两个 JSON 值：对象 key 增删为 Structure，标量变化为 Value；数组按索引对比。
+pub fn diff_json(
+    base: &Value,
+    current: &Value,
+    prefix: &str,
+    rules: &IgnoreRules,
+) -> Vec<FieldDiff> {
+    let mut out = Vec::new();
+    if rules.matches(prefix) {
+        return out; // 忽略规则命中：整棵子树跳过
+    }
+    match (base, current) {
+        (Value::Object(b), Value::Object(c)) => {
+            let mut keys: Vec<&String> = b.keys().chain(c.keys()).collect();
+            keys.sort();
+            keys.dedup();
+            for k in keys {
+                let path = format!("{prefix}.{k}");
+                match (b.get(k), c.get(k)) {
+                    (Some(bv), Some(cv)) => out.extend(diff_json(bv, cv, &path, rules)),
+                    (Some(bv), None) => out.push(FieldDiff {
+                        path: path.clone(),
+                        kind: DiffKind::Structure,
+                        baseline: Some(value_summary(bv)),
+                        current: None,
+                    }),
+                    (None, Some(cv)) => out.push(FieldDiff {
+                        path: path.clone(),
+                        kind: DiffKind::Structure,
+                        baseline: None,
+                        current: Some(value_summary(cv)),
+                    }),
+                    (None, None) => {}
+                }
+            }
+        }
+        (Value::Array(b), Value::Array(c)) => {
+            let len = b.len().max(c.len());
+            for i in 0..len {
+                let path = format!("{prefix}[{i}]");
+                match (b.get(i), c.get(i)) {
+                    (Some(bv), Some(cv)) => out.extend(diff_json(bv, cv, &path, rules)),
+                    (Some(bv), None) => out.push(FieldDiff {
+                        path: path.clone(),
+                        kind: DiffKind::Structure,
+                        baseline: Some(value_summary(bv)),
+                        current: None,
+                    }),
+                    (None, Some(cv)) => out.push(FieldDiff {
+                        path: path.clone(),
+                        kind: DiffKind::Structure,
+                        baseline: None,
+                        current: Some(value_summary(cv)),
+                    }),
+                    (None, None) => {}
+                }
+            }
+        }
+        (b, c) if b == c => {}
+        (b, c) => out.push(FieldDiff {
+            path: prefix.to_string(),
+            kind: DiffKind::Value,
+            baseline: Some(value_summary(b)),
+            current: Some(value_summary(c)),
+        }),
+    }
+    out
+}
+
+fn value_summary(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => "null".to_string(),
+        Value::Array(a) => format!("[{} 项]", a.len()),
+        Value::Object(o) => format!("{{{}}}", o.len()),
+    }
+}
+
 /// `tape compare` 主流程：完整实现由任务 7 填充。
 pub fn run(
     _baseline: &Path,
@@ -458,5 +540,48 @@ mod tests {
         assert_eq!(missing, 1, "综艺 应缺失");
         assert_eq!(added, 1, "新版多出的电影调用应标新增");
         assert_eq!(matched, 2, "电影与电视剧各配对一条");
+    }
+
+    #[test]
+    fn json_diff_separates_structure_and_value_and_applies_rules() {
+        let base: Value = serde_json::from_str(
+            r#"{"data":{"title":"a","list":[{"id":1,"name":"x"}],"token":"T1"}}"#,
+        )
+        .unwrap();
+        let curr: Value = serde_json::from_str(
+            r#"{"data":{"title":"b","list":[{"id":2,"name":"y"}],"extra":true,"token":"T2"}}"#,
+        )
+        .unwrap();
+        let rules = IgnoreRules::from_paths(vec![
+            "$.data.token".to_string(),
+            "$.data.list[*].id".to_string(),
+        ]);
+        let diffs = diff_json(&base, &curr, "$", &rules);
+        assert!(
+            diffs
+                .iter()
+                .any(|d| d.path == "$.data.title" && d.kind == DiffKind::Value),
+            "title 值变化应检出: {diffs:?}"
+        );
+        assert!(
+            diffs
+                .iter()
+                .any(|d| d.path == "$.data.list[0].name" && d.kind == DiffKind::Value),
+            "list[0].name 值变化应检出: {diffs:?}"
+        );
+        assert!(
+            diffs
+                .iter()
+                .any(|d| d.path == "$.data.extra" && d.kind == DiffKind::Structure),
+            "extra 字段新增应检出: {diffs:?}"
+        );
+        assert!(
+            !diffs.iter().any(|d| d.path.contains("token")),
+            "token 应被忽略: {diffs:?}"
+        );
+        assert!(
+            !diffs.iter().any(|d| d.path.contains("[0].id")),
+            "list[*].id 应被忽略: {diffs:?}"
+        );
     }
 }
