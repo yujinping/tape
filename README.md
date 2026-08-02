@@ -23,8 +23,8 @@ tape 面向电视盒子、大屏与 Android 设备的**开发与调试**场景�
 - **资源落盘**：App 直接请求过的静态资源与响应中引用的资源自动下载，按 sha256 去重；重放时按路径提供。
 - **录制保真**：录制阶段原样回传响应（100% 保真），快照保存原始请求 / 响应，支持手工编辑，重放即时生效。
 - **设备调试日志**：`tape logcat` 纯 CLI 实时查看 Android 设备日志（级别 / 关键词过滤、终端彩色输出），每次会话自动落盘带时间戳的 `.log` 文件，无需额外抓取工具。
-- **console 日志接收**：`tape console` 起一个 HTTP 服务，盒子 WebView / 网页通过 GET / POST 推送 `console.log` 等调试日志，带 CORS、即时落盘 `console-YYYYMMDD-HHMMSS.log`。
-- **应用网络日志接收**：`tape app` 接收无法使用 logcat 的盒子应用推送的应用内日志 / 网络事件（GET / POST），即时落盘 `app-YYYYMMDD-HHMMSS.log`；与 console 共用同一套接收组件。
+- **console 日志接收**：`tape console` 起一个 HTTP 服务，盒子 WebView / 网页通过 GET / POST 推送 `console.log` 等调试日志，带 CORS、即时落盘 `console-YYYYMMDD-HHMMSSmmm.log`。
+- **应用网络日志接收**：`tape app` 接收无法使用 logcat 的盒子应用推送的应用内日志 / 网络事件（GET / POST），即时落盘 `app-YYYYMMDD-HHMMSSmmm.log`；与 console 共用同一套接收组件。
 
 ## 目录
 
@@ -131,7 +131,7 @@ http://<tape-ip>:8888/https://www.example.com/api/v1/login
 - `record`：从路径解析出目标 host 与真实路径，按正常代理逻辑转发、过滤、录制；快照以真实目标 URL 落盘。
 - `replay`：剥离前缀后按 method + path 匹配快照（origin 从前缀中提取做精确匹配），静态资源同样可用。
 - 目标支持 `http://` 与 `https://` 前缀；`record` 通过 TLS 客户端连接上游 https 站点并解密录制（无 MITM）。
-- 监听地址固定为 `0.0.0.0`（本机所有网卡），局域网设备通过 tape 所在电脑的 IP 直接访问。
+- 监听地址默认 `0.0.0.0`（本机所有网卡），局域网设备通过 tape 所在电脑的 IP 直接访问；仅本机调试可用 `--bind 127.0.0.1` 缩小暴露面。
 - 验证建议用 curl 或 App（浏览器地址栏会对前缀做百分号编码与规范化）：
 
 ```bash
@@ -233,7 +233,7 @@ absolute_base = "http://127.0.0.1:8888/"   # 仅 absolute 模式生效
   - `absolute`：改写为 `absolute_base` 指定基地址，适合依赖固定域名 / IP 的客户端；
   - `none`：不改写，原样返回录制的响应。
 - `absolute_base`：仅 `rewrite = "absolute"` 时生效，建议以 `/` 结尾，默认 `http://127.0.0.1:8888/`。
-- 监听地址固定为 `0.0.0.0`，与 `record` 一致，局域网设备可直接访问。
+- 监听地址默认 `0.0.0.0`（与 `record` 一致），局域网设备可直接访问；可用 `--bind 127.0.0.1` 限制仅本机访问（也可在配置文件 `[replay]` 表设置，命令行优先）。
 
 ## HTTPS 上游（record 模式）
 
@@ -273,8 +273,8 @@ tape-api/
 ## 命令行参数
 
 ```text
-tape record [--port 8888] [--dir ./tape-api] [--config tape-config.toml] [--rewrite-on-record] [-v]
-tape replay [--port 8888] [--dir ./tape-api] [--config tape-config.toml]
+tape record [--bind 0.0.0.0] [--port 8888] [--dir ./tape-api] [--config tape-config.toml] [--rewrite-on-record] [-v]
+tape replay [--bind 0.0.0.0] [--port 8888] [--dir ./tape-api] [--config tape-config.toml]
                  [--rewrite relative|absolute|none] [--absolute-base http://127.0.0.1:8888/] [-v]
 tape list [--dir ./tape-api]
 tape logcat [-s SERIAL] [-l LEVEL] [--search KEYWORD] [--log-dir ./logs] [--no-color] [-v]
@@ -283,37 +283,38 @@ tape app [--port 8900] [--log-dir ./logs] [--no-color] [-v]
 ```
 
 - `--config`：record / replay 共用配置文件。未指定时默认读取数据目录下的 `tape-config.toml`；该文件不存在时 record 录制全部、replay 使用内置默认值；显式指定则必须存在且合法。
+- `--bind`：record / replay 监听地址，默认 `0.0.0.0`（全网卡，供局域网设备访问）。仅本机调试时可用 `127.0.0.1` 缩小暴露面；replay 也可在配置文件 `[replay]` 表设置，命令行优先。
 - `--port`：record / replay 默认都是 `8888`，录制与重放两阶段 App 地址保持一致。
 - `tape list`：列出数据目录下缓存的站点，以及每个站点的接口快照数与资源文件数（以 `snapshots/` 目录为准）。
 - `--rewrite-on-record`：录制时同步改写回传给 App 的响应（默认关闭，避免影响公司网络下的实时会话）。
-- `tape logcat`：实时查看 Android logcat 日志并按级别 / 关键词过滤，同时自动落盘为 `{log-dir}/logcat-YYYYMMDD-HHMMSS.log`（纯文本、无颜色，便于事后检索）。详见下文 [logcat](#logcatandroid-日志实时查看与自动落盘)。
-- `tape console`：启动 HTTP 服务接收盒子 WebView / 网页推送的调试日志（GET / POST），自动落盘为 `{log-dir}/console-YYYYMMDD-HHMMSS.log`。详见下文 [console](#console盒子-webview-调试日志接收)。
-- `tape app`：启动 HTTP 服务接收盒子应用推送的应用内日志 / 网络事件（GET / POST），自动落盘为 `{log-dir}/app-YYYYMMDD-HHMMSS.log`。详见下文 [app](#app盒子应用网络日志接收)。
+- `tape logcat`：实时查看 Android logcat 日志并按级别 / 关键词过滤，同时自动落盘为 `{log-dir}/logcat-YYYYMMDD-HHMMSSmmm.log`（纯文本、无颜色，便于事后检索）。详见下文 [logcat](#logcatandroid-日志实时查看与自动落盘)。
+- `tape console`：启动 HTTP 服务接收盒子 WebView / 网页推送的调试日志（GET / POST），自动落盘为 `{log-dir}/console-YYYYMMDD-HHMMSSmmm.log`。详见下文 [console](#console盒子-webview-调试日志接收)。
+- `tape app`：启动 HTTP 服务接收盒子应用推送的应用内日志 / 网络事件（GET / POST），自动落盘为 `{log-dir}/app-YYYYMMDD-HHMMSSmmm.log`。详见下文 [app](#app盒子应用网络日志接收)。
 
 ## logcat：Android 日志实时查看与自动落盘
 
 `tape logcat` 是移植自 [rcat](https://github.com/soenkehahn/rcat)（MIT License）的纯 CLI 子命令：不依赖图形界面，在终端实时输出 Android 设备日志，并**自动将日志落盘**，方便事后检索与归档。
 
 ```bash
-tape logcat                          # 使用第一台在线设备，输出到 ./logs/logcat-YYYYMMDD-HHMMSS.log
+tape logcat                          # 使用第一台在线设备，输出到 ./logs/logcat-YYYYMMDD-HHMMSSmmm.log
 tape logcat -s emulator-5554 -l E --search crash   # 只看 Error 及以上、且含 crash 的日志
 tape logcat --log-dir /tmp/logs --no-color > logcat.txt   # 重定向到文件（管道下自动去色）
 ```
 
 - **设备选择**：缺省使用 `adb devices` 的第一台在线设备；多设备用 `-s/--serial` 指定串号。
 - **级别过滤**：`-l/--level` 为最小级别（V/D/I/W/E/F），缺省 V 显示全部；`--search` 关键词匹配 tag / message / pid / tid，大小写不敏感。
-- **自动落盘**：每次启动都会新建带时间戳的文件 `logcat-YYYYMMDD-HHMMSS.log`（本地时间），内容为纯文本、无 ANSI 颜色；写文件失败时降级为仅终端打印并告警。
-- **落盘命名规范**：各日志源按前缀区分、共用一个 `--log-dir`——`logcat-`（设备日志）、`console-`（WebView console 推送）、`app-`（盒子应用网络日志），均为 `{prefix}-YYYYMMDD-HHMMSS.log`。
+- **自动落盘**：每次启动都会新建带时间戳的文件 `logcat-YYYYMMDD-HHMMSSmmm.log`（本地时间），内容为纯文本、无 ANSI 颜色；写文件失败时降级为仅终端打印并告警。
+- **落盘命名规范**：各日志源按前缀区分、共用一个 `--log-dir`——`logcat-`（设备日志）、`console-`（WebView console 推送）、`app-`（盒子应用网络日志），均为 `{prefix}-YYYYMMDD-HHMMSSmmm.log`。
 - **停止**：Ctrl-C 优雅停止，会打印日志保存路径。
 - **前置条件**：本机需安装 adb 并加入 PATH（`adb devices` 能列出设备），tape 通过 `adb -s <serial> logcat -v threadtime` 读取。
 - **数据安全**：logcat 仅通过 adb 读取，不上传任何内容；日志文件仅保存在 `--log-dir` 指定的本地目录。
 
 ## console：盒子 WebView 调试日志接收
 
-`tape console` 启动一个 HTTP 服务，接收盒子内 WebView / 网页推送的调试日志，与 `logcat` 一样**即时落盘**：`{log-dir}/console-YYYYMMDD-HHMMSS.log`。响应带 CORS 头，网页端跨域 fetch / XHR 可直接推送，无需装证书、无需代理。
+`tape console` 启动一个 HTTP 服务，接收盒子内 WebView / 网页推送的调试日志，与 `logcat` 一样**即时落盘**：`{log-dir}/console-YYYYMMDD-HHMMSSmmm.log`。响应带 CORS 头，网页端跨域 fetch / XHR 可直接推送，无需装证书、无需代理。
 
 ```bash
-tape console                          # 默认监听 0.0.0.0:8899，落盘 ./logs/console-YYYYMMDD-HHMMSS.log
+tape console                          # 默认监听 0.0.0.0:8899，落盘 ./logs/console-YYYYMMDD-HHMMSSmmm.log
 tape console --port 9000 --log-dir /tmp/logs
 ```
 
@@ -347,10 +348,10 @@ fetch('http://<tape-ip>:8899/', {
 
 ## app：盒子应用网络日志接收
 
-`tape app` 接收**无法使用 logcat** 的盒子应用推送的应用内日志 / 网络事件（例如盒子固件没有 adb、或应用内埋点想直接上报），即时落盘 `{log-dir}/app-YYYYMMDD-HHMMSS.log`。与 `console` 共用同一套 HTTP 接收组件，**推送协议完全相同**（GET / POST / JSON / 表单 / 纯文本，见上文 [console](#console盒子-webview-调试日志接收)），只是监听端口与落盘前缀不同：
+`tape app` 接收**无法使用 logcat** 的盒子应用推送的应用内日志 / 网络事件（例如盒子固件没有 adb、或应用内埋点想直接上报），即时落盘 `{log-dir}/app-YYYYMMDD-HHMMSSmmm.log`。与 `console` 共用同一套 HTTP 接收组件，**推送协议完全相同**（GET / POST / JSON / 表单 / 纯文本，见上文 [console](#console盒子-webview-调试日志接收)），只是监听端口与落盘前缀不同：
 
 ```bash
-tape app                              # 默认监听 0.0.0.0:8900，落盘 ./logs/app-YYYYMMDD-HHMMSS.log
+tape app                              # 默认监听 0.0.0.0:8900，落盘 ./logs/app-YYYYMMDD-HHMMSSmmm.log
 tape app --port 9100 --log-dir /tmp/logs
 ```
 
@@ -390,8 +391,8 @@ POST http://<tape-ip>:8900/   Content-Type: application/json
 tape 会持续围绕盒子开发 / 调试场景补齐能力，规划中的功能：
 
 - **WebView console 日志接收** ✅ 已实现（`tape console`）：盒子内 WebView / 网页通过 GET / POST 推送 `console.log` 等，统一落盘查看。
-- **console 日志即时落盘** ✅ 已实现：推送按时间戳即时写入 `console-YYYYMMDD-HHMMSS.log`。
-- **盒子应用网络日志** ✅ 已实现（`tape app`）：无法使用 logcat 的盒子应用，把应用内日志 / 网络事件通过 GET / POST 推送到 tape，落盘为 `app-YYYYMMDD-HHMMSS.log`。
+- **console 日志即时落盘** ✅ 已实现：推送按时间戳即时写入 `console-YYYYMMDD-HHMMSSmmm.log`。
+- **盒子应用网络日志** ✅ 已实现（`tape app`）：无法使用 logcat 的盒子应用，把应用内日志 / 网络事件通过 GET / POST 推送到 tape，落盘为 `app-YYYYMMDD-HHMMSSmmm.log`。
 - 更多盒子调试辅助能力持续补充（欢迎通过 issue 提需求）。
 
 ## 开发
@@ -404,6 +405,7 @@ cargo build --release
 ## 已知限制
 
 - App ↔ tape 之间仅 HTTP/1.1 明文（tape 不做 HTTPS 服务端，App 无需装证书）；上游 https 站点已支持，但 **CONNECT 隧道 / MITM 抓 https 明文**不支持（需要 CA 证书体系与设备信任）。
-- 响应体整体缓冲后再落盘（适合接口 / 静态资源场景，超大流式响应暂未做流式落盘）。
+- 请求与响应体都会整体缓冲进内存后再转发 / 落盘（适合接口与静态资源场景，无大小上限；超大文件或流式响应会占用较多内存，暂未做流式落盘）。
 - 不同上游若存在相同相对路径的静态资源，重放时按索引顺序命中，优先 origin 精确匹配；建议录制时用 `--config` 的过滤规则收敛范围。
 - 相对资源路径提取只覆盖根相对路径（`/static/xxx` 等），`../` 形式的相对引用依赖快照兜底（页面渲染时会作为请求被录制）。
+- record / replay / console / app 均为**无鉴权**的 HTTP 服务且默认监听全网卡，局域网内任何设备都可访问（调试工具的设计使然）；请在可信网络中使用，或用 `--bind 127.0.0.1` 限制仅本机访问。
