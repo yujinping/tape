@@ -18,6 +18,7 @@ tape 在「公司专网 / 有网环境」下，将 App 的全部 HTTP 请求与�
 - **共用配置**：`record` 与 `replay` 共用同一 TOML 配置文件，含录制过滤、重放端口与改写模式等；命令行参数优先。
 - **资源落盘**：App 直接请求过的静态资源与响应中引用的资源自动下载，按 sha256 去重；重放时按路径提供。
 - **录制保真**：录制阶段原样回传响应（100% 保真），快照保存原始请求 / 响应，支持手工编辑，重放即时生效。
+- **logcat 日志**：`tape logcat` 纯 CLI 实时查看 Android 设备日志（级别 / 关键词过滤、终端彩色输出），并自动落盘带时间戳的 `.log` 文件。
 
 ## 目录
 
@@ -31,6 +32,7 @@ tape 在「公司专网 / 有网环境」下，将 App 的全部 HTTP 请求与�
 - [HTTPS 上游（record 模式）](#https-上游record-模式)
 - [数据目录与软链接切换](#数据目录与软链接切换)
 - [命令行参数](#命令行参数)
+- [logcat：Android 日志实时查看与自动落盘](#logcatandroid-日志实时查看与自动落盘)
 - [跨平台支持（Windows / macOS / Linux）](#跨平台支持windows--macos--linux)
 - [开发](#开发)
 - [已知限制](#已知限制)
@@ -264,12 +266,31 @@ tape record [--port 8888] [--dir ./tape-api] [--config tape-config.toml] [--rewr
 tape replay [--port 8888] [--dir ./tape-api] [--config tape-config.toml]
                  [--rewrite relative|absolute|none] [--absolute-base http://127.0.0.1:8888/] [-v]
 tape list [--dir ./tape-api]
+tape logcat [-s SERIAL] [-l LEVEL] [--search KEYWORD] [--log-dir ./logs] [--no-color] [-v]
 ```
 
 - `--config`：record / replay 共用配置文件。未指定时默认读取数据目录下的 `tape-config.toml`；该文件不存在时 record 录制全部、replay 使用内置默认值；显式指定则必须存在且合法。
 - `--port`：record / replay 默认都是 `8888`，录制与重放两阶段 App 地址保持一致。
 - `tape list`：列出数据目录下缓存的站点，以及每个站点的接口快照数与资源文件数（以 `snapshots/` 目录为准）。
 - `--rewrite-on-record`：录制时同步改写回传给 App 的响应（默认关闭，避免影响公司网络下的实时会话）。
+- `tape logcat`：实时查看 Android logcat 日志并按级别 / 关键词过滤，同时自动落盘为 `{log-dir}/logcat-YYYYMMDD-HHMMSS.log`（纯文本、无颜色，便于事后检索）。详见下文 [logcat](#logcatandroid-日志实时查看与自动落盘)。
+
+## logcat：Android 日志实时查看与自动落盘
+
+`tape logcat` 是移植自 [rcat](https://github.com/soenkehahn/rcat)（MIT License）的纯 CLI 子命令：不依赖图形界面，在终端实时输出 Android 设备日志，并**自动将日志落盘**，方便事后检索与归档。
+
+```bash
+tape logcat                          # 使用第一台在线设备，输出到 ./logs/logcat-YYYYMMDD-HHMMSS.log
+tape logcat -s emulator-5554 -l E --search crash   # 只看 Error 及以上、且含 crash 的日志
+tape logcat --log-dir /tmp/logs --no-color > logcat.txt   # 重定向到文件（管道下自动去色）
+```
+
+- **设备选择**：缺省使用 `adb devices` 的第一台在线设备；多设备用 `-s/--serial` 指定串号。
+- **级别过滤**：`-l/--level` 为最小级别（V/D/I/W/E/F），缺省 V 显示全部；`--search` 关键词匹配 tag / message / pid / tid，大小写不敏感。
+- **自动落盘**：每次启动都会新建带时间戳的文件 `logcat-YYYYMMDD-HHMMSS.log`（本地时间），内容为纯文本、无 ANSI 颜色；写文件失败时降级为仅终端打印并告警。
+- **停止**：Ctrl-C 优雅停止，会打印日志保存路径。
+- **前置条件**：本机需安装 adb 并加入 PATH（`adb devices` 能列出设备），tape 通过 `adb -s <serial> logcat -v threadtime` 读取。
+- **数据安全**：logcat 仅通过 adb 读取，不上传任何内容；日志文件仅保存在 `--log-dir` 指定的本地目录。
 
 ## 跨平台支持（Windows / macOS / Linux）
 

@@ -19,6 +19,8 @@ pub enum Command {
     Replay(ReplayArgs),
     /// 列出数据目录下缓存的站点与接口/资源数量
     List(ListArgs),
+    /// 实时查看 Android logcat 日志并自动落盘（纯 CLI，无 TUI）
+    Logcat(LogcatArgs),
 }
 
 #[derive(Args)]
@@ -80,4 +82,56 @@ pub enum RewriteMode {
     Absolute,
     /// 不改写
     None,
+}
+
+#[derive(Args)]
+pub struct LogcatArgs {
+    /// 设备串号（缺省使用第一台在线设备；可先运行 adb devices 查看）
+    #[arg(short, long, value_name = "SERIAL")]
+    pub serial: Option<String>,
+    /// 最小日志级别（V/D/I/W/E/F，缺省 V 显示全部）
+    #[arg(short, long, value_enum)]
+    pub level: Option<LogLevel>,
+    /// 关键词过滤（大小写不敏感，匹配 tag/message/pid/tid）
+    #[arg(long)]
+    pub search: Option<String>,
+    /// 日志落盘目录（默认当前目录下 logs，文件为 logcat-YYYYMMDD-HHMMSS.log）
+    #[arg(long, default_value = "./logs")]
+    pub log_dir: PathBuf,
+    /// 禁用终端彩色输出（管道重定向时自动禁用，无需手动加）
+    #[arg(long)]
+    pub no_color: bool,
+    /// 日志详细程度（可重复 -v）
+    #[arg(short, long, action = ArgAction::Count)]
+    pub verbose: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum LogLevel {
+    /// Verbose：全部日志
+    V,
+    /// Debug
+    D,
+    /// Info
+    I,
+    /// Warning
+    W,
+    /// Error
+    E,
+    /// Fatal
+    F,
+}
+
+impl LogLevel {
+    /// 级别字母，与 logcat 级别一致（V/D/I/W/E/F）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LogLevel::V => "V",
+            LogLevel::D => "D",
+            LogLevel::I => "I",
+            LogLevel::W => "W",
+            LogLevel::E => "E",
+            LogLevel::F => "F",
+        }
+    }
 }

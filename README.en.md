@@ -21,6 +21,7 @@ During a session on a corporate intranet, tape records every HTTP request and re
 - [HTTPS Upstreams](#https-upstreams-record-mode)
 - [Data Directory & Symlink Switching](#data-directory--symlink-switching)
 - [Command-line Options](#command-line-options)
+- [logcat: Live Android Logs with Auto-dump](#logcat-live-android-logs-with-auto-dump)
 - [Cross-platform Support](#cross-platform-support-windows--macos--linux)
 - [Development](#development)
 - [Known Limitations](#known-limitations)
@@ -34,6 +35,7 @@ During a session on a corporate intranet, tape records every HTTP request and re
 - **Shared config**: `record` and `replay` share a single TOML config file (recording filters, replay port, rewrite mode); CLI arguments take precedence.
 - **Asset persistence**: static assets requested directly by the app or referenced in responses are downloaded and deduplicated by sha256; replay serves them by path.
 - **Fidelity**: responses are passed through unchanged during recording (100% fidelity); snapshots store the original requests and responses, are human-editable, and take effect immediately on replay.
+- **logcat logs**: `tape logcat` is a pure CLI viewer for Android device logs (level/keyword filtering, colored terminal output) that automatically writes each session to a timestamped `.log` file.
 
 ## Use Cases
 
@@ -264,12 +266,31 @@ tape record [--port 8888] [--dir ./tape-api] [--config tape-config.toml] [--rewr
 tape replay [--port 8888] [--dir ./tape-api] [--config tape-config.toml]
                  [--rewrite relative|absolute|none] [--absolute-base http://127.0.0.1:8888/] [-v]
 tape list [--dir ./tape-api]
+tape logcat [-s SERIAL] [-l LEVEL] [--search KEYWORD] [--log-dir ./logs] [--no-color] [-v]
 ```
 
 - `--config`: shared config file for record / replay. When omitted, tape reads `tape-config.toml` from the data directory; if missing, record captures everything and replay uses built-in defaults. When explicitly provided, the file must exist and be valid.
 - `--port`: `8888` by default for both record and replay, keeping the app's address identical across the two phases.
 - `tape list`: lists the cached sites in the data directory with per-site snapshot and asset counts (based on the `snapshots/` directory).
 - `--rewrite-on-record`: also rewrite responses while recording (default off, to keep live sessions on the corporate network untouched).
+- `tape logcat`: live Android logcat viewer with level/keyword filtering; each session is automatically saved to `{log-dir}/logcat-YYYYMMDD-HHMMSS.log` (plain text, no color). See [logcat](#logcat-live-android-logs-with-auto-dump) below.
+
+## logcat: Live Android Logs with Auto-dump
+
+`tape logcat` is a pure CLI subcommand ported from [rcat](https://github.com/soenkehahn/rcat) (MIT License): no GUI required, it streams Android device logs to the terminal with filtering and **automatically dumps each session to disk** for later review and archiving.
+
+```bash
+tape logcat                          # uses the first online device; writes ./logs/logcat-YYYYMMDD-HHMMSS.log
+tape logcat -s emulator-5554 -l E --search crash   # only Error+ entries containing "crash"
+tape logcat --log-dir /tmp/logs --no-color > logcat.txt   # redirect to a file (color auto-disabled when piped)
+```
+
+- **Device selection**: defaults to the first online device from `adb devices`; use `-s/--serial` with multiple devices.
+- **Level filter**: `-l/--level` is the minimum level (V/D/I/W/E/F, default V = all); `--search` matches tag / message / pid / tid, case-insensitive.
+- **Auto-dump**: every run creates a timestamped `logcat-YYYYMMDD-HHMMSS.log` (local time) with plain text (no ANSI colors); if writing fails, tape degrades to terminal-only output and warns.
+- **Stop**: Ctrl-C stops gracefully and prints the saved log path.
+- **Prerequisite**: adb must be installed and on PATH (`adb devices` must list the device); tape reads via `adb -s <serial> logcat -v threadtime`.
+- **Privacy**: logs are read locally through adb and never uploaded; files stay under `--log-dir`.
 
 ## Cross-platform Support (Windows / macOS / Linux)
 
