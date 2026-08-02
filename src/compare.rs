@@ -1,12 +1,15 @@
 //! `tape compare`：对比两个录制目录，按「method+path 分组 → 归一化请求指纹配对 →
 //! 调用顺序兜底」三层对齐，输出字段级 JSON diff 与 Markdown 报告。
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use serde_json::Value;
+use tracing::info;
 
 use crate::rewrite;
 use crate::snapshot::Snapshot;
+use crate::store;
 
 /// 归一化后的单次调用记录（对比单元）。
 #[derive(Debug, Clone)]
@@ -161,6 +164,162 @@ fn collect_json_keys(value: &Value, prefix: &str, rules: &IgnoreRules) -> Vec<St
     out
 }
 
+/// 匹配类别：基线有新版无 / 新版有基线无 / 两边都有。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchKind {
+    Missing,
+    Added,
+    Matched,
+}
+
+/// 差异类型：结构差异（字段增删）vs 值差异（字段值变化）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffKind {
+    Structure,
+    Value,
+}
+
+/// 一条字段级差异。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldDiff {
+    pub path: String,
+    pub kind: DiffKind,
+    pub baseline: Option<String>,
+    pub current: Option<String>,
+}
+
+/// 一次对齐后的对比单元。
+#[derive(Debug)]
+pub struct CallComparison {
+    pub method: String,
+    pub path: String,
+    pub kind: MatchKind,
+    pub baseline: Option<CallRecord>,
+    pub current: Option<CallRecord>,
+    pub status_diff: Option<(u16, u16)>,
+    pub response_diffs: Vec<FieldDiff>,
+    pub request_diff: Option<String>,
+}
+
+/// 加载两个目录并执行三层对齐。
+pub fn compare_dirs(
+    baseline_dir: &Path,
+    current_dir: &Path,
+    rules: &IgnoreRules,
+) -> Result<Vec<CallComparison>> {
+    let baseline = load_records(baseline_dir)?;
+    let current = load_records(current_dir)?;
+    info!(
+        "对比加载完成：基线 {} 条，新版 {} 条",
+        baseline.len(),
+        current.len()
+    );
+    Ok(align_calls(&baseline, &current, rules))
+}
+
+fn load_records(dir: &Path) -> Result<Vec<CallRecord>> {
+    let snaps = store::load_snapshots(dir)?;
+    Ok(snaps.iter().map(CallRecord::from_snapshot).collect())
+}
+
+fn align_calls(
+    baseline: &[CallRecord],
+    current: &[CallRecord],
+    rules: &IgnoreRules,
+) -> Vec<CallComparison> {
+    let n = baseline.len();
+    let mut buckets: HashMap<(String, String), Vec<usize>> = HashMap::new();
+    for (i, r) in baseline.iter().enumerate() {
+        buckets
+            .entry((r.method.clone(), r.path.clone()))
+            .or_default()
+            .push(i);
+    }
+    for (j, r) in current.iter().enumerate() {
+        buckets
+            .entry((r.method.clone(), r.path.clone()))
+            .or_default()
+            .push(n + j);
+    }
+
+    let mut out = Vec::new();
+    for ((method, path), idxs) in buckets {
+        let base_idx: Vec<usize> = idxs.iter().copied().filter(|&i| i < n).collect();
+        let curr_idx: Vec<usize> = idxs
+            .iter()
+            .copied()
+            .filter(|&i| i >= n)
+            .map(|i| i - n)
+            .collect();
+        // 指纹分组：HashMap<fingerprint, (基线下标列表, 新版下标列表)>
+        let mut groups: HashMap<String, (Vec<usize>, Vec<usize>)> = HashMap::new();
+        for &i in &base_idx {
+            groups
+                .entry(baseline[i].fingerprint(rules))
+                .or_default()
+                .0
+                .push(i);
+        }
+        for &j in &curr_idx {
+            groups
+                .entry(current[j].fingerprint(rules))
+                .or_default()
+                .1
+                .push(j);
+        }
+        let mut keys: Vec<String> = groups.keys().cloned().collect();
+        keys.sort();
+        for key in keys {
+            let (mut bi, mut cj) = groups.remove(&key).unwrap();
+            // 指纹相同：按调用顺序（id 数值序）配对
+            bi.sort_by_key(|&i| numeric_id(&baseline[i].id));
+            cj.sort_by_key(|&j| numeric_id(&current[j].id));
+            let pairs = bi.len().min(cj.len());
+            for k in 0..pairs {
+                out.push(CallComparison {
+                    method: method.clone(),
+                    path: path.clone(),
+                    kind: MatchKind::Matched,
+                    baseline: Some(baseline[bi[k]].clone()),
+                    current: Some(current[cj[k]].clone()),
+                    status_diff: None,
+                    response_diffs: Vec::new(),
+                    request_diff: None,
+                });
+            }
+            for &i in &bi[pairs..] {
+                out.push(CallComparison {
+                    method: method.clone(),
+                    path: path.clone(),
+                    kind: MatchKind::Missing,
+                    baseline: Some(baseline[i].clone()),
+                    current: None,
+                    status_diff: None,
+                    response_diffs: Vec::new(),
+                    request_diff: None,
+                });
+            }
+            for &j in &cj[pairs..] {
+                out.push(CallComparison {
+                    method: method.clone(),
+                    path: path.clone(),
+                    kind: MatchKind::Added,
+                    baseline: None,
+                    current: Some(current[j].clone()),
+                    status_diff: None,
+                    response_diffs: Vec::new(),
+                    request_diff: None,
+                });
+            }
+        }
+    }
+    out
+}
+
+fn numeric_id(id: &str) -> u64 {
+    id.parse::<u64>().unwrap_or(u64::MAX)
+}
+
 /// `tape compare` 主流程：完整实现由任务 7 填充。
 pub fn run(
     _baseline: &Path,
@@ -245,5 +404,59 @@ mod tests {
             c.fingerprint(&rules),
             "动态字段 ts 被忽略后指纹应相同"
         );
+    }
+
+    #[test]
+    fn align_groups_by_path_then_fingerprint_then_order() {
+        let rules = IgnoreRules::default();
+        // 基线：同 path 三个调用（kw=电影 / kw=电视剧 / kw=综艺）
+        let base = vec![
+            CallRecord::from_snapshot(&call(
+                "000001",
+                "http://10.1.2.3:8080/api/search?kw=电影",
+                "",
+            )),
+            CallRecord::from_snapshot(&call(
+                "000002",
+                "http://10.1.2.3:8080/api/search?kw=电视剧",
+                "",
+            )),
+            CallRecord::from_snapshot(&call(
+                "000003",
+                "http://10.1.2.3:8080/api/search?kw=综艺",
+                "",
+            )),
+        ];
+        // 新版：kw=电影 重复两次 + kw=电视剧（顺序不同）
+        let curr = vec![
+            CallRecord::from_snapshot(&call(
+                "000001",
+                "http://10.1.2.3:8080/api/search?kw=电视剧",
+                "",
+            )),
+            CallRecord::from_snapshot(&call(
+                "000002",
+                "http://10.1.2.3:8080/api/search?kw=电影",
+                "",
+            )),
+            CallRecord::from_snapshot(&call(
+                "000003",
+                "http://10.1.2.3:8080/api/search?kw=电影",
+                "",
+            )),
+        ];
+        let result = align_calls(&base, &curr, &rules);
+        let missing = result
+            .iter()
+            .filter(|c| c.kind == MatchKind::Missing)
+            .count();
+        let added = result.iter().filter(|c| c.kind == MatchKind::Added).count();
+        let matched = result
+            .iter()
+            .filter(|c| c.kind == MatchKind::Matched)
+            .count();
+        assert_eq!(missing, 1, "综艺 应缺失");
+        assert_eq!(added, 1, "新版多出的电影调用应标新增");
+        assert_eq!(matched, 2, "电影与电视剧各配对一条");
     }
 }
