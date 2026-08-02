@@ -55,10 +55,11 @@ impl RecordState {
 
 pub async fn run(cfg: RecordConfig) -> Result<()> {
     let state = RecordState::new(cfg.dir.clone(), cfg.rewrite_on_record, cfg.filter)?;
-    let listener = TcpListener::bind(("0.0.0.0", cfg.port)).await?;
+    let listener = TcpListener::bind((cfg.bind, cfg.port)).await?;
     let abs_dir = std::path::absolute(&cfg.dir).unwrap_or_else(|_| cfg.dir.clone());
     info!(
-        "tape record 已启动: 0.0.0.0:{} （数据目录: {}，绝对路径: {}）",
+        "tape record 已启动: {}:{} （数据目录: {}，绝对路径: {}）",
+        cfg.bind,
         cfg.port,
         cfg.dir.display(),
         abs_dir.display()
@@ -141,7 +142,13 @@ pub async fn handle_request(
     let request_headers = parts
         .headers
         .iter()
-        .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+        // to_str 对非 ASCII 头值会失败；快照用 lossy 保留可见内容，避免静默丢成空串
+        .map(|(k, v)| {
+            (
+                k.as_str().to_string(),
+                String::from_utf8_lossy(v.as_bytes()).into_owned(),
+            )
+        })
         .collect::<Vec<_>>();
 
     let req_body = match body.collect().await {
@@ -218,7 +225,12 @@ pub async fn handle_request(
             let resp_headers = resp_parts
                 .headers
                 .iter()
-                .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+                .map(|(k, v)| {
+                    (
+                        k.as_str().to_string(),
+                        String::from_utf8_lossy(v.as_bytes()).into_owned(),
+                    )
+                })
                 .collect::<Vec<_>>();
             let content_type = resp_parts
                 .headers

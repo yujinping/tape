@@ -1,7 +1,7 @@
 //! `tape logcat`：Android logcat 查看子命令（CLI）。
 //!
 //! 实时读取设备日志，按级别/关键词过滤后彩色输出到终端，并自动落盘
-//! `{log-dir}/logcat-YYYYMMDD-HHMMSS.log`（纯文本、无颜色）。
+//! `{log-dir}/logcat-YYYYMMDD-HHMMSSmmm.log`（纯文本、无颜色）。
 //!
 //! adb 读取、logcat 解析与过滤逻辑移植自 [rcat](https://github.com/soenkehahn/rcat)（MIT License）。
 use std::io::{BufRead, BufReader, IsTerminal, Write};
@@ -108,11 +108,17 @@ struct LogcatReader {
 }
 
 impl LogcatReader {
-    fn start(serial: &str) -> Result<(Self, mpsc::UnboundedReceiver<String>)> {
-        // 先清空设备日志缓冲区，保证只看到"本次会话"的日志
-        let _ = Command::new("adb")
-            .args(["-s", serial, "logcat", "-c"])
-            .output();
+    async fn start(serial: &str) -> Result<(Self, mpsc::UnboundedReceiver<String>)> {
+        // 先清空设备日志缓冲区，保证只看到"本次会话"的日志；
+        // adb 命令是阻塞式进程调用，放 spawn_blocking 避免卡住 tokio 工作线程
+        let serial_clear = serial.to_string();
+        tokio::task::spawn_blocking(move || {
+            let _ = Command::new("adb")
+                .args(["-s", &serial_clear, "logcat", "-c"])
+                .output();
+        })
+        .await
+        .context("等待 adb logcat -c 失败")?;
 
         let mut process = Command::new("adb")
             .args(["-s", serial, "logcat", "-v", "threadtime"])
@@ -171,7 +177,9 @@ pub async fn run(args: LogcatArgs) -> Result<()> {
     let color = !args.no_color && std::io::stdout().is_terminal();
 
     // 1. 选择设备
-    let devices = list_devices();
+    let devices = tokio::task::spawn_blocking(list_devices)
+        .await
+        .context("等待 adb devices 检查失败")?;
     let serial = match &args.serial {
         Some(s) => {
             if !devices.iter().any(|d| d == s) {
@@ -186,9 +194,9 @@ pub async fn run(args: LogcatArgs) -> Result<()> {
     };
 
     // 2. 启动 logcat
-    let (mut reader, mut rx) = LogcatReader::start(&serial)?;
+    let (mut reader, mut rx) = LogcatReader::start(&serial).await?;
 
-    // 3. 创建落盘文件：{log-dir}/logcat-YYYYMMDD-HHMMSS.log
+    // 3. 创建落盘文件：{log-dir}/logcat-YYYYMMDD-HHMMSSmmm.log
     std::fs::create_dir_all(&args.log_dir)
         .with_context(|| format!("无法创建日志目录 {}", args.log_dir.display()))?;
     let log_path = crate::log_file::path(&args.log_dir, "logcat");

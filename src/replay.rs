@@ -26,8 +26,11 @@ pub struct ReplayState {
     snapshots: Vec<Snapshot>,
     /// (METHOD, path) -> 快照下标（按 PRD 以 method+path 匹配，忽略 query）
     by_path: HashMap<(String, String), Vec<usize>>,
-    /// "/相对路径" -> 资源索引项
-    resources: HashMap<String, ResourceIndexEntry>,
+    /// (authority, "/相对路径") -> 资源索引项：代理式 / 前缀式按目标主机精确匹配，
+    /// 避免多站点同路径资源（如各自 /img/logo.png）互相串站。
+    resources_by_origin: HashMap<(String, String), ResourceIndexEntry>,
+    /// "/相对路径" -> 资源索引项（取最早录制的一条）：直接访问（Host 是 tape 自身）时回退匹配。
+    resources_by_path: HashMap<String, ResourceIndexEntry>,
     rewrite: RewriteRule,
 }
 
@@ -39,22 +42,35 @@ impl ReplayState {
             let (method, path) = request_method_path(snap);
             by_path.entry((method, path)).or_default().push(i);
         }
-        let resources = ResourceStore::open(&dir.join("resources"))?
+        let resource_entries = ResourceStore::open(&dir.join("resources"))?
             .index()
-            .iter()
-            .map(|e| (format!("/{}", e.path), e.clone()))
-            .collect::<HashMap<_, _>>();
+            .to_vec();
+        let mut resources_by_origin: HashMap<(String, String), ResourceIndexEntry> = HashMap::new();
+        let mut resources_by_path: HashMap<String, ResourceIndexEntry> = HashMap::new();
+        // index 按录制顺序排列，or_insert 保证同键冲突时保留最早一条（行为确定）。
+        for e in resource_entries {
+            resources_by_origin
+                .entry((
+                    origin_host(&e.origin).to_ascii_lowercase(),
+                    format!("/{}", e.path),
+                ))
+                .or_insert_with(|| e.clone());
+            resources_by_path
+                .entry(format!("/{}", e.path))
+                .or_insert_with(|| e.clone());
+        }
         info!(
             "已加载 {} 条快照、{} 个静态资源（{}）",
             snapshots.len(),
-            resources.len(),
+            resources_by_origin.len(),
             dir.display()
         );
         Ok(Arc::new(Self {
             root: dir,
             snapshots,
             by_path,
-            resources,
+            resources_by_origin,
+            resources_by_path,
             rewrite,
         }))
     }
@@ -72,14 +88,27 @@ impl ReplayState {
             .max_by_key(|&&i| self.snapshots[i].id.clone())
             .map(|&i| &self.snapshots[i])
     }
+
+    /// 资源匹配：代理式 / 前缀式请求优先按目标主机精确匹配（(host, path)），
+    /// 直接访问（Host 是 tape 自身地址，索引里没有该 origin）回退为按路径匹配。
+    fn match_resource(&self, path: &str, host: &str) -> Option<&ResourceIndexEntry> {
+        if !host.is_empty() {
+            let key = (host.to_ascii_lowercase(), path.to_string());
+            if let Some(e) = self.resources_by_origin.get(&key) {
+                return Some(e);
+            }
+        }
+        self.resources_by_path.get(path)
+    }
 }
 
 pub async fn run(cfg: ReplayConfig) -> Result<()> {
     let state = ReplayState::new(cfg.dir.clone(), cfg.rewrite)?;
-    let listener = TcpListener::bind(("0.0.0.0", cfg.port)).await?;
+    let listener = TcpListener::bind((cfg.bind, cfg.port)).await?;
     let abs_dir = std::path::absolute(&cfg.dir).unwrap_or_else(|_| cfg.dir.clone());
     info!(
-        "tape replay 已启动: 0.0.0.0:{} （数据目录: {}，绝对路径: {}）",
+        "tape replay 已启动: {}:{} （数据目录: {}，绝对路径: {}）",
+        cfg.bind,
         cfg.port,
         cfg.dir.display(),
         abs_dir.display()
@@ -136,6 +165,10 @@ pub async fn handle_request(
         .as_ref()
         .map(|t| t.path_and_query.clone())
         .unwrap_or_else(|| req.uri().path().to_string());
+    // 快照索引（by_path，由 request_method_path 构建）与资源索引（录制时经 url_path 构建）
+    // 都以“去 query 的路径”为键；查询侧必须同样剥离，否则代理式 / 前缀式请求一旦带 query
+    // （最常见形态）就会全部 MISS 返回 404。剥离后 path 同时用于 content-type 推断，更准确。
+    let path = path.split('?').next().unwrap_or("/").to_string();
     let match_host = target
         .as_ref()
         .map(|t| t.authority.clone())
@@ -155,7 +188,11 @@ pub async fn handle_request(
         info!("HIT  {} {}", method, path);
         return serve_snapshot(&state, snap, &path, prefix_ctx.as_ref());
     }
-    if let Some(entry) = state.resources.get(&path) {
+    if let Some(entry) = state.match_resource(&path, &match_host) {
+        // 资源只服务 GET/HEAD：避免 POST 等写方法打到静态资源上返回 200 造成语义混乱
+        if !matches!(method.as_str(), "GET" | "HEAD") {
+            return method_not_allowed(&method, &path);
+        }
         info!("RES  {} {}", method, path);
         return serve_resource(&state, entry, &path, prefix_ctx.as_ref());
     }
@@ -278,6 +315,17 @@ fn not_found(message: &str) -> Response<Full<Bytes>> {
         .status(StatusCode::NOT_FOUND)
         .header(hyper::header::CONTENT_TYPE, "text/plain; charset=utf-8")
         .body(Full::new(Bytes::from(message.to_string())))
+        .unwrap()
+}
+
+fn method_not_allowed(method: &str, path: &str) -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(StatusCode::METHOD_NOT_ALLOWED)
+        .header(hyper::header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(hyper::header::ALLOW, "GET, HEAD")
+        .body(Full::new(Bytes::from(format!(
+            "方法 {method} 不支持（资源仅支持 GET/HEAD）：{path}"
+        ))))
         .unwrap()
 }
 

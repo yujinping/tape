@@ -8,8 +8,11 @@ use flate2::write::{GzEncoder, ZlibEncoder};
 use regex::{Captures, Regex};
 
 static URL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)\b(https?)://([a-z0-9.\-]+)(?::(\d{1,5}))?((?:/[^\s"'<>(){}]*)?)"#)
-        .expect("invalid URL regex")
+    // group4 同时接受「/path?query」与「?query」（无 path 直接带 query 的形态）
+    Regex::new(
+        r#"(?i)\b(https?)://([a-z0-9.\-]+)(?::(\d{1,5}))?((?:/[^\s"'<>(){}]*)?(?:\?[^\s"'<>(){}]*)?)"#,
+    )
+    .expect("invalid URL regex")
 });
 
 /// 协议相对 URL：`//host/path`（HTML src/href、CSS url()、JS 字符串里很常见）。
@@ -18,8 +21,10 @@ static URL_RE: LazyLock<Regex> = LazyLock::new(|| {
 /// （前导为 `:` 或字母数字时不视为协议相对 URL），同时排除 `-`：
 /// DOCTYPE 公共标识符 `-//W3C//DTD ...` 里的 `//W3C` 不能当作协议相对链接。
 static PROTOCOL_REL_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)(^|[^:\w-])//([a-z0-9.\-]+)(?::(\d{1,5}))?((?:/[^\s"'<>(){}]*)?)"#)
-        .expect("invalid protocol-relative regex")
+    Regex::new(
+        r#"(?i)(^|[^:\w-])//([a-z0-9.\-]+)(?::(\d{1,5}))?((?:/[^\s"'<>(){}]*)?(?:\?[^\s"'<>(){}]*)?)"#,
+    )
+    .expect("invalid protocol-relative regex")
 });
 
 /// HTML 标签属性里的根相对路径（`href="/assets/x.css"`、`src="/js/a.js"`、`action="/login"` 等）。
@@ -173,12 +178,15 @@ fn replaced(rule: &RewriteRule, caps: &Captures) -> String {
     let base = match rule {
         RewriteRule::Absolute { base } | RewriteRule::Prefix { base, .. } => base,
         RewriteRule::Relative => {
-            return caps
-                .get(4)
-                .map(|m| m.as_str())
-                .filter(|p| p.starts_with('/'))
-                .unwrap_or("/")
-                .to_string();
+            let p = caps.get(4).map(|m| m.as_str()).unwrap_or("/");
+            return if p.starts_with('/') {
+                p.to_string()
+            } else if p.starts_with('?') {
+                // 无 path 直接带 query（http://host?x=1）：主机部分改为根路径，保留 query
+                format!("/{p}")
+            } else {
+                "/".to_string()
+            };
         }
         RewriteRule::None => return caps[0].to_string(),
     };
@@ -187,11 +195,14 @@ fn replaced(rule: &RewriteRule, caps: &Captures) -> String {
     }
     let scheme = caps.get(1).map(|m| m.as_str()).unwrap_or("http");
     let port = caps.get(3).map(|m| m.as_str()).unwrap_or("");
-    let path = caps
-        .get(4)
-        .map(|m| m.as_str())
-        .filter(|p| p.starts_with('/'))
-        .unwrap_or("/");
+    let path = caps.get(4).map(|m| m.as_str()).unwrap_or("/");
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else if path.starts_with('?') {
+        format!("/{path}")
+    } else {
+        "/".to_string()
+    };
     match rule {
         RewriteRule::Absolute { base } => {
             format!(
@@ -234,11 +245,14 @@ fn replaced_protocol_relative(rule: &RewriteRule, caps: &Captures) -> String {
     } else {
         format!("{host}:{port}")
     };
-    let path = caps
-        .get(4)
-        .map(|m| m.as_str())
-        .filter(|p| p.starts_with('/'))
-        .unwrap_or("/");
+    let path = caps.get(4).map(|m| m.as_str()).unwrap_or("/");
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else if path.starts_with('?') {
+        format!("/{path}")
+    } else {
+        "/".to_string()
+    };
     format!(
         "{lead}{}/{scheme}://{host_port}{path}",
         base.trim_end_matches('/')
@@ -446,6 +460,29 @@ mod tests {
         assert_eq!(
             rewrite_text("https://10.1.2.3", &RewriteRule::Relative),
             "/"
+        );
+    }
+
+    #[test]
+    fn relative_keeps_query_without_path() {
+        // 无 path 直接带 query 的形态：主机部分改为根路径，query 必须保留
+        assert_eq!(
+            rewrite_text("http://10.1.2.3:8080?x=1", &RewriteRule::Relative),
+            "/?x=1"
+        );
+        let rule = RewriteRule::Prefix {
+            base: "http://127.0.0.1:8888".to_string(),
+            scheme: "http".to_string(),
+            origin: "10.1.2.3:8080".to_string(),
+        };
+        assert_eq!(
+            rewrite_text("http://10.1.2.3:8080?x=1", &rule),
+            "http://127.0.0.1:8888/http://10.1.2.3:8080/?x=1"
+        );
+        // 提取 URL 也应保留无 path 的 query
+        assert_eq!(
+            extract_http_urls("http://10.1.2.3:8080?x=1"),
+            vec!["http://10.1.2.3:8080?x=1"]
         );
     }
 

@@ -1,5 +1,5 @@
 //! `tape app`：接收无法使用 logcat 的盒子应用推送的网络日志（GET / POST），自动落盘
-//! `{log-dir}/app-YYYYMMDD-HHMMSS.log`。实现复用通用组件 [`crate::ingest`]。
+//! `{log-dir}/app-YYYYMMDD-HHMMSSmmm.log`。实现复用通用组件 [`crate::ingest`]。
 
 use anyhow::Result;
 

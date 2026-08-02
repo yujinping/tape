@@ -40,9 +40,11 @@ pub fn build_client() -> Result<HttpClient> {
 
 /// 专网自签证书场景：设置 TAPE_INSECURE_TLS=1 跳过上游 TLS 证书校验。
 fn insecure_tls_enabled() -> bool {
+    // 显式白名单：只有 1 / true / yes / on（大小写不敏感）才启用，
+    // 其余取值（0 / false / no / off / 空）一律视为关闭，避免 TAPE_INSECURE_TLS=false 反而开启跳过校验。
     matches!(
         std::env::var("TAPE_INSECURE_TLS").as_deref(),
-        Ok(v) if v != "0" && !v.is_empty()
+        Ok(v) if matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
     )
 }
 
@@ -84,5 +86,27 @@ impl ServerCertVerifier for NoVerify {
         rustls::crypto::CryptoProvider::get_default()
             .map(|p| p.signature_verification_algorithms.supported_schemes())
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insecure_tls_whitelist_semantics() {
+        // 显式开启值
+        for v in ["1", "true", "TRUE", "Yes", "on", " 1 "] {
+            unsafe { std::env::set_var("TAPE_INSECURE_TLS", v) };
+            assert!(insecure_tls_enabled(), "{v:?} 应启用跳过校验");
+        }
+        // 其余取值一律关闭（尤其 false 不应误开启）
+        for v in ["0", "false", "FALSE", "no", "off", ""] {
+            unsafe { std::env::set_var("TAPE_INSECURE_TLS", v) };
+            assert!(!insecure_tls_enabled(), "{v:?} 不应启用跳过校验");
+        }
+        // 未设置同样关闭
+        unsafe { std::env::remove_var("TAPE_INSECURE_TLS") };
+        assert!(!insecure_tls_enabled());
     }
 }

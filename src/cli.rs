@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
@@ -40,6 +41,9 @@ pub struct ListArgs {
 
 #[derive(Args)]
 pub struct RecordArgs {
+    /// 监听地址（默认 0.0.0.0 全网卡，供局域网设备访问；仅本机使用时可用 127.0.0.1 缩小暴露面）
+    #[arg(long, default_value = "0.0.0.0")]
+    pub bind: IpAddr,
     /// 代理监听端口
     #[arg(short, long, default_value_t = DEFAULT_PORT)]
     pub port: u16,
@@ -61,6 +65,10 @@ pub struct RecordArgs {
 
 #[derive(Args)]
 pub struct ReplayArgs {
+    /// 监听地址（默认 0.0.0.0 全网卡，供局域网设备访问；仅本机使用时可用 127.0.0.1 缩小暴露面；
+    /// 可在配置文件 [replay] 表中设置，命令行优先）
+    #[arg(long)]
+    pub bind: Option<IpAddr>,
     /// 重放服务监听端口（默认 8888，与 record 一致，录制/重放两阶段 APP 地址不变；可在配置文件 [replay] 表中设置，命令行优先）
     #[arg(short, long)]
     pub port: Option<u16>,
@@ -103,7 +111,7 @@ pub struct LogcatArgs {
     /// 关键词过滤（大小写不敏感，匹配 tag/message/pid/tid）
     #[arg(long)]
     pub search: Option<String>,
-    /// 日志落盘目录（默认当前目录下 logs，文件为 logcat-YYYYMMDD-HHMMSS.log）
+    /// 日志落盘目录（默认当前目录下 logs，文件为 logcat-YYYYMMDD-HHMMSSmmm.log）
     #[arg(long, default_value = "./logs")]
     pub log_dir: PathBuf,
     /// 禁用终端彩色输出（管道重定向时自动禁用，无需手动加）
@@ -119,7 +127,7 @@ pub struct AppArgs {
     /// 接收服务监听端口（默认 8900，与 record/replay 的 8888、console 的 8899 区分开）
     #[arg(short, long, default_value_t = 8900)]
     pub port: u16,
-    /// 日志落盘目录（默认当前目录下 logs，文件为 app-YYYYMMDD-HHMMSS.log）
+    /// 日志落盘目录（默认当前目录下 logs，文件为 app-YYYYMMDD-HHMMSSmmm.log）
     #[arg(long, default_value = "./logs")]
     pub log_dir: PathBuf,
     /// 禁用终端彩色输出（管道重定向时自动禁用，无需手动加）
@@ -165,7 +173,7 @@ pub struct ConsoleArgs {
     /// 接收服务监听端口（默认 8899，与 record/replay 的 8888 区分开）
     #[arg(short, long, default_value_t = 8899)]
     pub port: u16,
-    /// 日志落盘目录（默认当前目录下 logs，文件为 console-YYYYMMDD-HHMMSS.log）
+    /// 日志落盘目录（默认当前目录下 logs，文件为 console-YYYYMMDD-HHMMSSmmm.log）
     #[arg(long, default_value = "./logs")]
     pub log_dir: PathBuf,
     /// 禁用终端彩色输出（管道重定向时自动禁用，无需手动加）

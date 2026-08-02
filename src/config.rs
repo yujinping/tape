@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -16,7 +17,11 @@ pub const DEFAULT_PORT: u16 = 8888;
 /// absolute 改写模式默认本地基地址（与默认端口一致）。
 pub const DEFAULT_ABSOLUTE_BASE: &str = "http://127.0.0.1:8888/";
 
+/// 默认监听地址：0.0.0.0（全网卡，供局域网设备访问）。
+pub const DEFAULT_BIND: IpAddr = IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED);
+
 pub struct RecordConfig {
+    pub bind: IpAddr,
     pub port: u16,
     pub dir: PathBuf,
     pub rewrite_on_record: bool,
@@ -26,6 +31,7 @@ pub struct RecordConfig {
 }
 
 pub struct ReplayConfig {
+    pub bind: IpAddr,
     pub port: u16,
     pub dir: PathBuf,
     pub rewrite: RewriteRule,
@@ -56,6 +62,7 @@ struct RecordFilterSection {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReplaySection {
+    bind: Option<String>,
     port: Option<u16>,
     rewrite: Option<String>,
     absolute_base: Option<String>,
@@ -135,6 +142,7 @@ fn compile_regex(pattern: &str) -> Result<Regex> {
 }
 
 pub fn record_config(
+    bind: IpAddr,
     port: u16,
     dir: PathBuf,
     rewrite_on_record: bool,
@@ -145,6 +153,7 @@ pub fn record_config(
     // 先校验配置再建目录：显式 --config 缺失时报错，不应留下空的半成品数据目录
     std::fs::create_dir_all(&dir).with_context(|| format!("无法创建数据目录 {}", dir.display()))?;
     Ok(RecordConfig {
+        bind,
         port,
         dir,
         rewrite_on_record,
@@ -182,6 +191,7 @@ fn normalize_hosts(hosts: Vec<String>) -> Vec<String> {
 }
 
 pub fn replay_config(
+    bind: Option<IpAddr>,
     port: Option<u16>,
     dir: PathBuf,
     mode: Option<RewriteMode>,
@@ -199,6 +209,16 @@ pub fn replay_config(
     let replay = raw.replay.unwrap_or_default();
 
     // 优先级：命令行显式参数 > 配置文件 > 内置默认值。
+    let bind = match bind {
+        Some(b) => b,
+        None => match replay.bind.as_deref() {
+            Some(value) => value
+                .trim()
+                .parse::<IpAddr>()
+                .with_context(|| format!("配置文件 [replay] 的 bind 取值非法: {value}"))?,
+            None => DEFAULT_BIND,
+        },
+    };
     let port = port.or(replay.port).unwrap_or(DEFAULT_PORT);
     let mode = match mode {
         Some(m) => m,
@@ -219,6 +239,7 @@ pub fn replay_config(
         RewriteMode::None => RewriteRule::None,
     };
     Ok(ReplayConfig {
+        bind,
         port,
         dir,
         rewrite,
@@ -388,9 +409,10 @@ include_hosts_regex = ['^10\.1\.2\.(3|4):\d+$']
         let path = dir.join(CONFIG_FILE_NAME);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&path, "[record]\ninclude_hosts = [\"10.1.2.3\"]\n").unwrap();
-        let cfg = record_config(8888, dir.clone(), false, None).unwrap();
+        let cfg = record_config(DEFAULT_BIND, 8888, dir.clone(), false, None).unwrap();
         assert!(cfg.filter.matches("10.1.2.3:80"));
         assert!(!cfg.filter.matches("other.com:80"));
+        assert_eq!(cfg.bind, DEFAULT_BIND);
         assert_eq!(cfg.config_path, Some(path));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -399,7 +421,7 @@ include_hosts_regex = ['^10\.1\.2\.(3|4):\d+$']
     fn record_config_without_file_records_all() {
         let dir = std::env::temp_dir().join(format!("tape-record-none-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let cfg = record_config(8888, dir.clone(), false, None).unwrap();
+        let cfg = record_config(DEFAULT_BIND, 8888, dir.clone(), false, None).unwrap();
         assert!(cfg.filter.is_all());
         assert_eq!(cfg.config_path, None);
         let _ = std::fs::remove_dir_all(&dir);
@@ -429,13 +451,15 @@ include_hosts_regex = ['^10\.1\.2\.(3|4):\d+$']
 include_hosts = ["10.1.2.3"]
 
 [replay]
+bind = "127.0.0.1"
 port = 9999
 rewrite = "absolute"
 absolute_base = "http://10.0.0.1:9000/"
 "#,
         )
         .unwrap();
-        let cfg = replay_config(None, dir.clone(), None, None, None).unwrap();
+        let cfg = replay_config(None, None, dir.clone(), None, None, None).unwrap();
+        assert_eq!(cfg.bind, "127.0.0.1".parse::<std::net::IpAddr>().unwrap());
         assert_eq!(cfg.port, 9999);
         let RewriteRule::Absolute { base } = cfg.rewrite else {
             panic!("expected absolute rewrite");
@@ -455,6 +479,7 @@ absolute_base = "http://10.0.0.1:9000/"
         )
         .unwrap();
         let cfg = replay_config(
+            Some("10.0.0.2".parse().unwrap()),
             Some(1234),
             dir.clone(),
             Some(RewriteMode::Relative),
@@ -462,6 +487,7 @@ absolute_base = "http://10.0.0.1:9000/"
             None,
         )
         .unwrap();
+        assert_eq!(cfg.bind, "10.0.0.2".parse::<std::net::IpAddr>().unwrap());
         assert_eq!(cfg.port, 1234);
         assert!(matches!(cfg.rewrite, RewriteRule::Relative));
         let _ = std::fs::remove_dir_all(&dir);
@@ -471,7 +497,8 @@ absolute_base = "http://10.0.0.1:9000/"
     fn replay_config_defaults_without_file() {
         let dir = std::env::temp_dir().join(format!("tape-replay-default-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let cfg = replay_config(None, dir.clone(), None, None, None).unwrap();
+        let cfg = replay_config(None, None, dir.clone(), None, None, None).unwrap();
+        assert_eq!(cfg.bind, DEFAULT_BIND);
         assert_eq!(cfg.port, DEFAULT_PORT);
         assert!(matches!(cfg.rewrite, RewriteRule::Relative));
         assert_eq!(cfg.config_path, None);
@@ -483,7 +510,20 @@ absolute_base = "http://10.0.0.1:9000/"
         let dir = std::env::temp_dir().join(format!("tape-replay-bad-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(CONFIG_FILE_NAME), "[replay]\nrewrite = \"foo\"\n").unwrap();
-        assert!(replay_config(None, dir.clone(), None, None, None).is_err());
+        assert!(replay_config(None, None, dir.clone(), None, None, None).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replay_config_invalid_bind_errors() {
+        let dir = std::env::temp_dir().join(format!("tape-replay-bind-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(CONFIG_FILE_NAME),
+            "[replay]\nbind = \"not-an-ip\"\n",
+        )
+        .unwrap();
+        assert!(replay_config(None, None, dir.clone(), None, None, None).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

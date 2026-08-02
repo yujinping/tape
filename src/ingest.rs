@@ -1,5 +1,5 @@
 //! 通用 HTTP 日志接收组件：启动一个 HTTP 服务，接收 GET / POST 推送的调试日志，
-//! 终端实时打印并自动落盘 `{log-dir}/{prefix}-YYYYMMDD-HHMMSS.log`。
+//! 终端实时打印并自动落盘 `{log-dir}/{prefix}-YYYYMMDD-HHMMSSmmm.log`。
 //!
 //! 被多个子命令复用，仅 `prefix` 不同（见 `tape console` / `tape app`）：
 //! - `console-`：盒子 WebView / 网页 console 日志；
@@ -44,7 +44,7 @@ pub struct RawEntry {
 pub struct IngestParams {
     pub port: u16,
     pub log_dir: PathBuf,
-    /// 落盘文件前缀（`console` / `app`），文件名 `{prefix}-YYYYMMDD-HHMMSS.log`。
+    /// 落盘文件前缀（`console` / `app`），文件名 `{prefix}-YYYYMMDD-HHMMSSmmm.log`。
     pub prefix: &'static str,
     pub no_color: bool,
 }

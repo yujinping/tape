@@ -871,6 +871,103 @@ async fn replay_prefix_style_rewrites_redirect_back_to_tape() {
 }
 
 #[tokio::test]
+async fn replay_matches_queries_in_proxy_and_prefix_forms() {
+    let dir = temp_dir("replay-query");
+
+    // 快照 URL 与录制侧一致：带 query（录制时索引按 method+path 去 query）
+    let snap = Snapshot {
+        id: "000001".to_string(),
+        origin: "http://10.1.2.3:8080".to_string(),
+        recorded_at: "2026-08-01T00:00:00Z".to_string(),
+        duration_ms: 1,
+        request: RequestRecord {
+            method: "GET".to_string(),
+            url: "http://10.1.2.3:8080/api/user?id=1".to_string(),
+            headers: vec![],
+            body: String::new(),
+            body_encoding: snapshot::ENCODING_UTF8.to_string(),
+        },
+        response: ResponseRecord {
+            status: 200,
+            headers: vec![("content-type".to_string(), "application/json".to_string())],
+            body: r#"{"url":"http://10.1.2.3:8080/api/user?id=1"}"#.to_string(),
+            body_encoding: snapshot::ENCODING_UTF8.to_string(),
+        },
+    };
+    write_snapshot(&dir, &snap);
+
+    // 静态资源：索引路径去 query（录制侧 url_path），查询侧带 query 也应命中
+    let mut resources = ResourceStore::open(&dir.join("resources")).unwrap();
+    resources
+        .store(
+            b"PNGDATA",
+            "http://10.1.2.3:8080",
+            "/img/a.png",
+            "image/png",
+        )
+        .unwrap();
+    resources.save_index().unwrap();
+
+    let state = ReplayState::new(dir.clone(), RewriteRule::None).unwrap();
+    let listener = free_listener().await;
+    let replay_addr = listener.local_addr().unwrap();
+    tokio::spawn(replay_accept_loop(listener, state));
+
+    // absolute-form（标准代理）带 query：应命中快照（按 method+path 匹配，忽略 query）
+    let resp = raw_proxy_get(replay_addr, "http://10.1.2.3:8080/api/user?id=1").await;
+    assert!(
+        resp.starts_with("HTTP/1.1 200"),
+        "代理式带 query 应命中快照: {resp}"
+    );
+    assert!(
+        resp.contains(r#"{"url":"http://10.1.2.3:8080/api/user?id=1"}"#),
+        "快照 body 应原样返回: {resp}"
+    );
+
+    // 前缀式带 query：应命中快照
+    let resp = raw_request(
+        replay_addr,
+        "GET /http://10.1.2.3:8080/api/user?id=1 HTTP/1.1",
+        &format!("127.0.0.1:{}", replay_addr.port()),
+    )
+    .await;
+    assert!(
+        resp.starts_with("HTTP/1.1 200"),
+        "前缀式带 query 应命中快照: {resp}"
+    );
+    assert!(
+        resp.contains(&format!(
+            r#"{{"url":"http://127.0.0.1:{}/http://10.1.2.3:8080/api/user?id=1"}}"#,
+            replay_addr.port()
+        )),
+        "前缀式带 query 应命中并把链接改回 tape: {resp}"
+    );
+
+    // 前缀式静态资源带 query（缓存破坏参数）：应命中资源
+    let resp = raw_request(
+        replay_addr,
+        "GET /http://10.1.2.3:8080/img/a.png?v=2 HTTP/1.1",
+        &format!("127.0.0.1:{}", replay_addr.port()),
+    )
+    .await;
+    assert!(
+        resp.starts_with("HTTP/1.1 200"),
+        "前缀式资源带 query 应命中: {resp}"
+    );
+    assert!(resp.contains("PNGDATA"), "应返回资源内容: {resp}");
+
+    // absolute-form 静态资源带 query：同样应命中
+    let resp = raw_proxy_get(replay_addr, "http://10.1.2.3:8080/img/a.png?v=2").await;
+    assert!(
+        resp.starts_with("HTTP/1.1 200"),
+        "代理式资源带 query 应命中: {resp}"
+    );
+    assert!(resp.contains("PNGDATA"), "应返回资源内容: {resp}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn replay_picks_latest_when_ambiguous() {
     let dir = temp_dir("replay-latest");
 
@@ -909,6 +1006,129 @@ async fn replay_picks_latest_when_ambiguous() {
     let resp = c.get(url.parse().unwrap()).await.unwrap();
     let text = String::from_utf8(resp.collect().await.unwrap().to_bytes().to_vec()).unwrap();
     assert_eq!(text, "\"NEW\"", "歧义时应取最新录制快照");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn replay_resources_do_not_cross_origins() {
+    let dir = temp_dir("replay-res-origin");
+
+    // 两个站点存在同路径资源 /img/a.png 但内容不同
+    let mut resources = ResourceStore::open(&dir.join("resources")).unwrap();
+    resources
+        .store(
+            b"ORIGIN-A",
+            "http://10.1.2.3:8080",
+            "/img/a.png",
+            "image/png",
+        )
+        .unwrap();
+    resources
+        .store(
+            b"ORIGIN-B",
+            "http://10.2.3.4:8080",
+            "/img/a.png",
+            "image/png",
+        )
+        .unwrap();
+    resources.save_index().unwrap();
+
+    let state = ReplayState::new(dir.clone(), RewriteRule::None).unwrap();
+    let listener = free_listener().await;
+    let replay_addr = listener.local_addr().unwrap();
+    tokio::spawn(replay_accept_loop(listener, state));
+
+    // 前缀式请求 A 的资源：应命中 A 的内容，不串到 B
+    let resp = raw_request(
+        replay_addr,
+        "GET /http://10.1.2.3:8080/img/a.png HTTP/1.1",
+        &format!("127.0.0.1:{}", replay_addr.port()),
+    )
+    .await;
+    assert!(
+        resp.starts_with("HTTP/1.1 200"),
+        "站点 A 资源应命中: {resp}"
+    );
+    assert!(resp.contains("ORIGIN-A"), "站点 A 应返回自身资源: {resp}");
+    assert!(!resp.contains("ORIGIN-B"), "不得串到站点 B 的资源: {resp}");
+
+    // 前缀式请求 B 的资源：应命中 B 的内容
+    let resp = raw_request(
+        replay_addr,
+        "GET /http://10.2.3.4:8080/img/a.png HTTP/1.1",
+        &format!("127.0.0.1:{}", replay_addr.port()),
+    )
+    .await;
+    assert!(
+        resp.starts_with("HTTP/1.1 200"),
+        "站点 B 资源应命中: {resp}"
+    );
+    assert!(resp.contains("ORIGIN-B"), "站点 B 应返回自身资源: {resp}");
+    assert!(!resp.contains("ORIGIN-A"), "不得串到站点 A 的资源: {resp}");
+
+    // 直接访问（Host 是 tape 自身地址）：回退按路径匹配，取最早录制的一条（A）
+    let c = client();
+    let resp = c
+        .get(
+            format!("http://127.0.0.1:{}/img/a.png", replay_addr.port())
+                .parse()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.collect().await.unwrap().to_bytes().to_vec();
+    assert_eq!(bytes, b"ORIGIN-A", "直接访问回退应命中最早录制的资源");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn replay_resources_reject_non_get_methods() {
+    let dir = temp_dir("replay-res-method");
+    let mut resources = ResourceStore::open(&dir.join("resources")).unwrap();
+    resources
+        .store(
+            b"PNGDATA",
+            "http://10.1.2.3:8080",
+            "/img/a.png",
+            "image/png",
+        )
+        .unwrap();
+    resources.save_index().unwrap();
+
+    let state = ReplayState::new(dir.clone(), RewriteRule::None).unwrap();
+    let listener = free_listener().await;
+    let replay_addr = listener.local_addr().unwrap();
+    tokio::spawn(replay_accept_loop(listener, state));
+
+    // POST 到资源路径：应 405 而非把资源当 200 返回
+    let resp = raw_request(
+        replay_addr,
+        "POST /img/a.png HTTP/1.1",
+        &format!("127.0.0.1:{}", replay_addr.port()),
+    )
+    .await;
+    assert!(resp.starts_with("HTTP/1.1 405"), "POST 资源应 405: {resp}");
+    assert!(
+        resp.to_lowercase().contains("allow: get, head"),
+        "405 响应应带 Allow: GET, HEAD: {resp}"
+    );
+
+    // GET 仍正常返回资源
+    let c = client();
+    let resp = c
+        .get(
+            format!("http://127.0.0.1:{}/img/a.png", replay_addr.port())
+                .parse()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.collect().await.unwrap().to_bytes().to_vec();
+    assert_eq!(bytes, b"PNGDATA");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1282,7 +1502,7 @@ async fn record_stores_requested_assets_to_resources() {
 
     let resource_file = dir
         .join("resources")
-        .join(format!("127.0.0.1_{}", origin.port()))
+        .join(format!("http_127.0.0.1_{}", origin.port()))
         .join("img")
         .join("a.png");
     assert!(

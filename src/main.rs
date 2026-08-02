@@ -9,13 +9,19 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         cli::Command::Record(args) => {
             init_tracing(args.verbose);
-            let cfg =
-                config::record_config(args.port, args.dir, args.rewrite_on_record, args.config)?;
+            let cfg = config::record_config(
+                args.bind,
+                args.port,
+                args.dir,
+                args.rewrite_on_record,
+                args.config,
+            )?;
             record::run(cfg).await
         }
         cli::Command::Replay(args) => {
             init_tracing(args.verbose);
             let cfg = config::replay_config(
+                args.bind,
                 args.port,
                 args.dir,
                 args.rewrite,

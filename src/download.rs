@@ -207,10 +207,23 @@ async fn fetch_and_store(
         return Ok(());
     }
     let path = rewrite::url_path(url);
+    // 资源自身的 origin（绝对 URL 可能是 CDN / 第三方域名，不能记成引用页面的 origin，
+    // 否则不同站点同路径资源会串站）；相对路径资源拼接后 url_origin 即页面 origin。
+    let resource_origin = url_origin(url);
     let mut store = store.lock().await;
-    store.store(&body, origin, &path, &content_type)?;
+    store.store(&body, &resource_origin, &path, &content_type)?;
     store.save_index()?;
     Ok(())
+}
+
+/// 从完整 URL 提取 origin（scheme://host[:port]），用于静态资源索引的归属判定。
+pub fn url_origin(url: &str) -> String {
+    url.split_once("://")
+        .map(|(scheme, rest)| {
+            let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+            format!("{scheme}://{host}")
+        })
+        .unwrap_or_else(|| url.to_string())
 }
 
 /// 该 Content-Type 是否属于应落盘到 resources/ 的静态资源（直接请求的响应）。
@@ -334,6 +347,20 @@ mod tests {
         assert!(!is_static_asset_type("text/html"));
     }
 
+    #[test]
+    fn url_origin_extraction() {
+        assert_eq!(
+            url_origin("http://10.1.2.3:8080/img/a.png?x=1"),
+            "http://10.1.2.3:8080"
+        );
+        assert_eq!(
+            url_origin("https://cdn.example.com/js/app.js"),
+            "https://cdn.example.com"
+        );
+        assert_eq!(url_origin("http://a.b.com:8443"), "http://a.b.com:8443");
+        assert_eq!(url_origin("no-scheme/path"), "no-scheme/path");
+    }
+
     #[tokio::test]
     async fn store_keeps_original_path_in_index() {
         let dir = std::env::temp_dir().join(format!("tape-res-idx-{}", std::process::id()));
@@ -345,7 +372,7 @@ mod tests {
         store.save_index().unwrap();
         assert_eq!(store.index()[0].path, "my img/a.png", "索引应保留原始路径");
         assert!(
-            dir.join("10.1.2.3_8080/my_img/a.png").is_file(),
+            dir.join("http_10.1.2.3_8080/my_img/a.png").is_file(),
             "磁盘副本用安全文件名"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -377,8 +404,8 @@ mod tests {
 
         let blobs = std::fs::read_dir(dir.join("blobs")).unwrap().count();
         assert_eq!(blobs, 1, "相同内容只应有一个 blob");
-        assert!(dir.join("10.1.2.3_8080/img/a.png").is_file());
-        assert!(dir.join("10.1.2.3_8080/img/b.png").is_file());
+        assert!(dir.join("http_10.1.2.3_8080/img/a.png").is_file());
+        assert!(dir.join("http_10.1.2.3_8080/img/b.png").is_file());
 
         let reopened = ResourceStore::open(&dir).unwrap();
         assert_eq!(reopened.index().len(), 2);
