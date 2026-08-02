@@ -4,7 +4,7 @@ A development & debugging toolbox for TV boxes / Android, written in pure Rust.
 
 English | [简体中文](./README.md)
 
-tape targets the **development and debugging** of TV boxes, large-screen and Android devices: one binary combines API recording / offline replay, live Android logcat viewing with automatic log dumps, and more (WebView console log ingestion is on the roadmap).
+tape targets the **development and debugging** of TV boxes, large-screen and Android devices: one binary combines API recording / offline replay, live Android logcat viewing, and WebView console log ingestion with automatic log dumps.
 
 - **Development (online)**: on a corporate intranet, tape records every HTTP request and response made by an app into snapshots and automatically downloads the static assets referenced by pages.
 - **Debugging**: view Android device logs in real time with level / keyword filtering; every session is automatically dumped to a timestamped `.log` file for later review.
@@ -26,6 +26,7 @@ tape targets the **development and debugging** of TV boxes, large-screen and And
 - [Data Directory & Symlink Switching](#data-directory--symlink-switching)
 - [Command-line Options](#command-line-options)
 - [logcat: Live Android Logs with Auto-dump](#logcat-live-android-logs-with-auto-dump)
+- [console: Box WebView Debug Log Ingestion](#console-box-webview-debug-log-ingestion)
 - [Cross-platform Support](#cross-platform-support-windows--macos--linux)
 - [Roadmap](#roadmap)
 - [Development](#development)
@@ -41,6 +42,7 @@ tape targets the **development and debugging** of TV boxes, large-screen and And
 - **Asset persistence**: static assets requested directly by the app or referenced in responses are downloaded and deduplicated by sha256; replay serves them by path.
 - **Fidelity**: responses are passed through unchanged during recording (100% fidelity); snapshots store the original requests and responses, are human-editable, and take effect immediately on replay.
 - **Device debug logs**: `tape logcat` is a pure CLI viewer for Android device logs (level/keyword filtering, colored terminal output) that automatically writes each session to a timestamped `.log` file — no extra log-collection tool needed.
+- **Console log ingestion**: `tape console` runs an HTTP endpoint that accepts `console.log` etc. from box WebViews / web pages via GET / POST, with CORS support and instant dumps to `console-YYYYMMDD-HHMMSS.log`.
 
 ## Use Cases
 
@@ -274,6 +276,7 @@ tape replay [--port 8888] [--dir ./tape-api] [--config tape-config.toml]
                  [--rewrite relative|absolute|none] [--absolute-base http://127.0.0.1:8888/] [-v]
 tape list [--dir ./tape-api]
 tape logcat [-s SERIAL] [-l LEVEL] [--search KEYWORD] [--log-dir ./logs] [--no-color] [-v]
+tape console [--port 8899] [--log-dir ./logs] [--no-color] [-v]
 ```
 
 - `--config`: shared config file for record / replay. When omitted, tape reads `tape-config.toml` from the data directory; if missing, record captures everything and replay uses built-in defaults. When explicitly provided, the file must exist and be valid.
@@ -281,6 +284,7 @@ tape logcat [-s SERIAL] [-l LEVEL] [--search KEYWORD] [--log-dir ./logs] [--no-c
 - `tape list`: lists the cached sites in the data directory with per-site snapshot and asset counts (based on the `snapshots/` directory).
 - `--rewrite-on-record`: also rewrite responses while recording (default off, to keep live sessions on the corporate network untouched).
 - `tape logcat`: live Android logcat viewer with level/keyword filtering; each session is automatically saved to `{log-dir}/logcat-YYYYMMDD-HHMMSS.log` (plain text, no color). See [logcat](#logcat-live-android-logs-with-auto-dump) below.
+- `tape console`: starts an HTTP endpoint that accepts debug logs pushed from box WebViews / web pages (GET / POST), automatically saved to `{log-dir}/console-YYYYMMDD-HHMMSS.log`. See [console](#console-box-webview-debug-log-ingestion) below.
 
 ## logcat: Live Android Logs with Auto-dump
 
@@ -295,10 +299,47 @@ tape logcat --log-dir /tmp/logs --no-color > logcat.txt   # redirect to a file (
 - **Device selection**: defaults to the first online device from `adb devices`; use `-s/--serial` with multiple devices.
 - **Level filter**: `-l/--level` is the minimum level (V/D/I/W/E/F, default V = all); `--search` matches tag / message / pid / tid, case-insensitive.
 - **Auto-dump**: every run creates a timestamped `logcat-YYYYMMDD-HHMMSS.log` (local time) with plain text (no ANSI colors); if writing fails, tape degrades to terminal-only output and warns.
-- **Dump naming convention**: log sources are distinguished by prefix and share one `--log-dir` — `logcat-` (device logs), `console-` (WebView console pushes, planned), `app-` (box app network logs, planned), all as `{prefix}-YYYYMMDD-HHMMSS.log`.
+- **Dump naming convention**: log sources are distinguished by prefix and share one `--log-dir` — `logcat-` (device logs), `console-` (WebView console pushes), `app-` (box app network logs, planned), all as `{prefix}-YYYYMMDD-HHMMSS.log`.
 - **Stop**: Ctrl-C stops gracefully and prints the saved log path.
 - **Prerequisite**: adb must be installed and on PATH (`adb devices` must list the device); tape reads via `adb -s <serial> logcat -v threadtime`.
 - **Privacy**: logs are read locally through adb and never uploaded; files stay under `--log-dir`.
+
+## console: Box WebView Debug Log Ingestion
+
+`tape console` runs an HTTP endpoint that accepts debug logs pushed from WebViews / web pages inside the box, with the same **instant dump** experience as `logcat`: `{log-dir}/console-YYYYMMDD-HHMMSS.log`. Responses carry CORS headers, so cross-origin fetch / XHR from web pages works without certificates or a proxy.
+
+```bash
+tape console                          # listens on 0.0.0.0:8899; writes ./logs/console-YYYYMMDD-HHMMSS.log
+tape console --port 9000 --log-dir /tmp/logs
+```
+
+**Push protocol** (plain `fetch` / `XMLHttpRequest` from the web page, no SDK needed):
+
+```js
+// GET style (simple; suitable for <script> beacon reporting)
+fetch('http://<tape-ip>:8899/?msg=' + encodeURIComponent('user clicked login') + '&level=info&tag=login')
+
+// POST JSON (recommended; carries url / line for locating the issue)
+fetch('http://<tape-ip>:8899/', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    level: 'warn',          // log / debug / info / warn / error
+    message: 'API timeout', // or the short alias msg
+    tag: 'page',            // optional, source label
+    url: location.href,     // optional, combined with line into the tag
+    line: 12                // optional, code line number
+  })
+});
+```
+
+- **GET**: `/?msg=...&level=...&tag=...&url=...&line=...`; `msg` is required (URL-encoded); multi-line messages (`%0A`) are dumped line by line.
+- **POST `text/plain`**: the whole body is one log entry; multiple lines are recorded separately (default level `log`).
+- **POST `application/x-www-form-urlencoded`**: same parameters as GET.
+- **POST `application/json`**: a single object or an array of objects with `level` / `message` (or `msg`) / `tag` / `url` / `line`; invalid JSON is recorded as an `[error]` entry.
+- **CORS**: every response includes `Access-Control-Allow-Origin: *`; OPTIONS preflight returns 204.
+- **Terminal output**: printed live with level colors; color is auto-disabled when piped (`--no-color` to force).
+- **Stop**: Ctrl-C stops gracefully and prints the saved log path.
 
 ## Cross-platform Support (Windows / macOS / Linux)
 
@@ -325,9 +366,9 @@ The script bumps the version (`Cargo.toml` / `Cargo.lock`), regenerates `CHANGEL
 
 tape keeps expanding around TV-box development / debugging. Planned features:
 
-- **WebView console log ingestion**: WebView / web pages inside the box push `console.log`, `console.error`, etc. to a unified tape endpoint via POST, viewable and filterable together with logcat.
-- **Instant console log dumps**: received console messages are written immediately to a timestamped `{log-dir}/console-YYYYMMDD-HHMMSS.log`, matching the logcat dump experience for later troubleshooting.
-- **Box app network logs**: boxes that cannot use logcat push their in-app logs / network events to tape via HTTP POST, dumped as `app-YYYYMMDD-HHMMSS.log`.
+- **WebView console log ingestion** ✅ done (`tape console`): box WebViews / web pages push `console.log` etc. via GET / POST for unified viewing and dumping.
+- **Instant console log dumps** ✅ done: pushes are written immediately to `console-YYYYMMDD-HHMMSS.log`.
+- **Box app network logs** (planned): boxes that cannot use logcat push their in-app logs / network events to tape via HTTP POST, dumped as `app-YYYYMMDD-HHMMSS.log`.
 - More box-debugging helpers will keep being added (feature requests welcome via issues).
 
 ## Development

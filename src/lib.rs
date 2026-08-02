@@ -1,5 +1,6 @@
 pub mod cli;
 pub mod config;
+pub mod console;
 pub mod download;
 pub mod http_util;
 pub mod list;

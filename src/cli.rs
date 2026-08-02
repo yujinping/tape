@@ -25,6 +25,8 @@ pub enum Command {
     List(ListArgs),
     /// 实时查看 Android logcat 日志并自动落盘（纯 CLI，无 TUI）
     Logcat(LogcatArgs),
+    /// 接收盒子 WebView / 网页推送的调试日志（GET/POST）并自动落盘
+    Console(ConsoleArgs),
 }
 
 #[derive(Args)]
@@ -138,4 +140,20 @@ impl LogLevel {
             LogLevel::F => "F",
         }
     }
+}
+
+#[derive(Args)]
+pub struct ConsoleArgs {
+    /// 接收服务监听端口（默认 8899，与 record/replay 的 8888 区分开）
+    #[arg(short, long, default_value_t = 8899)]
+    pub port: u16,
+    /// 日志落盘目录（默认当前目录下 logs，文件为 console-YYYYMMDD-HHMMSS.log）
+    #[arg(long, default_value = "./logs")]
+    pub log_dir: PathBuf,
+    /// 禁用终端彩色输出（管道重定向时自动禁用，无需手动加）
+    #[arg(long)]
+    pub no_color: bool,
+    /// 日志详细程度（可重复 -v）
+    #[arg(short, long, action = ArgAction::Count)]
+    pub verbose: u8,
 }
