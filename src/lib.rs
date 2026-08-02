@@ -1,8 +1,10 @@
 pub mod app;
 pub mod cli;
+pub mod compare;
 pub mod config;
 pub mod console;
 pub mod download;
+pub mod export;
 pub mod http_util;
 pub mod ingest;
 pub mod list;

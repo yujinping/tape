@@ -30,6 +30,10 @@ pub enum Command {
     Console(ConsoleArgs),
     /// 接收盒子应用推送的网络日志（GET/POST，无法用 logcat 时）并自动落盘
     App(AppArgs),
+    /// 导出录制目录的快照为 JSONL 流（AI 矩阵生成等外部工具消费）
+    Export(ExportArgs),
+    /// 对比两个录制目录：三层对齐 + JSON diff + Markdown 报告
+    Compare(CompareArgs),
 }
 
 #[derive(Args)]
@@ -179,6 +183,41 @@ pub struct ConsoleArgs {
     /// 禁用终端彩色输出（管道重定向时自动禁用，无需手动加）
     #[arg(long)]
     pub no_color: bool,
+    /// 日志详细程度（可重复 -v）
+    #[arg(short, long, action = ArgAction::Count)]
+    pub verbose: u8,
+}
+
+#[derive(Args)]
+pub struct ExportArgs {
+    /// 录制数据目录（tape record 的输出目录）
+    #[arg(value_name = "DIR")]
+    pub dir: PathBuf,
+    /// 输出文件（默认 stdout）
+    #[arg(short, long, value_name = "FILE")]
+    pub output: Option<PathBuf>,
+    /// 日志详细程度（可重复 -v）
+    #[arg(short, long, action = ArgAction::Count)]
+    pub verbose: u8,
+}
+
+#[derive(Args)]
+pub struct CompareArgs {
+    /// 基线录制目录（旧版实跑）
+    #[arg(value_name = "BASELINE_DIR")]
+    pub baseline: PathBuf,
+    /// 新版录制目录
+    #[arg(value_name = "CURRENT_DIR")]
+    pub current: PathBuf,
+    /// 功能矩阵 JSON（可选：报告按功能条目组织）
+    #[arg(long, value_name = "FILE")]
+    pub matrix: Option<PathBuf>,
+    /// 忽略规则 JSON（可选：字段路径列表，如 ["$.data.token"]）
+    #[arg(long, value_name = "FILE")]
+    pub ignore: Option<PathBuf>,
+    /// Markdown 报告输出文件（可选；不传则只打印终端摘要）
+    #[arg(short, long, value_name = "FILE")]
+    pub output: Option<PathBuf>,
     /// 日志详细程度（可重复 -v）
     #[arg(short, long, action = ArgAction::Count)]
     pub verbose: u8,
