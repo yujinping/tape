@@ -3,20 +3,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
-use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
-use hyper_util::client::legacy::Client;
-use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::rt::{TokioExecutor, TokioIo};
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{DigitallySignedStruct, SignatureScheme};
+use hyper_util::rt::TokioIo;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
@@ -26,12 +20,10 @@ use crate::download::{
     ResourceStore, download_resources, is_static_asset_type, looks_like_resource,
 };
 use crate::http_util::{is_hop_by_hop, parse_proxy_target};
+use crate::net::{HttpClient, build_client};
 use crate::rewrite::{RewriteRule, rewrite_location, rewrite_response_bytes_for};
 use crate::snapshot::{self, RequestRecord, ResponseRecord, Snapshot};
 use crate::store::Recorder;
-
-/// 同时支持 http/https 上游的转发客户端。
-pub type HttpClient = Client<HttpsConnector<HttpConnector>, Full<Bytes>>;
 
 pub struct RecordState {
     pub recorder: Recorder,
@@ -58,77 +50,6 @@ impl RecordState {
 
     fn should_record(&self, authority: &str) -> bool {
         self.filter.matches(authority)
-    }
-}
-
-fn build_client() -> Result<HttpClient> {
-    let https = if insecure_tls_enabled() {
-        let config = rustls::ClientConfig::builder()
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(NoVerify))
-            .with_no_client_auth();
-        HttpsConnectorBuilder::new()
-            .with_tls_config(config)
-            .https_or_http()
-            .enable_http1()
-            .build()
-    } else {
-        HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .context("加载系统 TLS 根证书失败")?
-            .https_or_http()
-            .enable_http1()
-            .build()
-    };
-    Ok(Client::builder(TokioExecutor::new()).build(https))
-}
-
-/// 专网自签证书场景：设置 TAPE_INSECURE_TLS=1 跳过上游 TLS 证书校验。
-fn insecure_tls_enabled() -> bool {
-    matches!(
-        std::env::var("TAPE_INSECURE_TLS").as_deref(),
-        Ok(v) if v != "0" && !v.is_empty()
-    )
-}
-
-/// 跳过证书校验的验证器（仅 TAPE_INSECURE_TLS=1 时启用）。
-#[derive(Debug)]
-struct NoVerify;
-
-impl ServerCertVerifier for NoVerify {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp: &[u8],
-        _now: UnixTime,
-    ) -> Result<ServerCertVerified, rustls::Error> {
-        Ok(ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        rustls::crypto::CryptoProvider::get_default()
-            .map(|p| p.signature_verification_algorithms.supported_schemes())
-            .unwrap_or_default()
     }
 }
 

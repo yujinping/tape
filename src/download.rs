@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, Semaphore};
 use tracing::warn;
 
-use crate::record::HttpClient;
+use crate::net::HttpClient;
 use crate::rewrite;
 
 const RESOURCE_EXTENSIONS: &[&str] = &[
