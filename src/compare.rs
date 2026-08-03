@@ -475,6 +475,9 @@ pub struct MatrixEntry {
     pub id: String,
     pub name: String,
     pub steps: Vec<MatrixStep>,
+    /// 业务结果断言列表（可选；无断言的旧矩阵仍可解析）
+    #[serde(default)]
+    pub expected: Vec<Assertion>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -487,6 +490,31 @@ pub struct MatrixStep {
 pub struct MatrixApi {
     pub method: String,
     pub path: String,
+}
+
+/// 业务结果断言：JSONPath 取值 + 操作符判定。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Assertion {
+    /// JSONPath，如 `$.data.list`、`$.errorCode`
+    pub path: String,
+    /// 断言操作符
+    pub op: AssertionOp,
+    /// eq / gt / contains 的目标值（exists / nonEmpty 不需要）
+    #[serde(default)]
+    pub value: Option<serde_json::Value>,
+    /// 人类可读描述，用于报告
+    #[serde(default)]
+    pub desc: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AssertionOp {
+    Eq,
+    Exists,
+    NonEmpty,
+    Gt,
+    Contains,
 }
 
 fn load_matrix(path: Option<&Path>) -> Result<Option<FeatureMatrix>> {
@@ -903,5 +931,35 @@ mod tests {
         assert!(md.contains("搜索流程"), "报告应按功能条目组织: {md}");
         assert!(md.contains("首页加载"), "报告应包含未缺失条目: {md}");
         assert!(md.contains("缺失"), "报告应含三分类汇总: {md}");
+    }
+
+    #[test]
+    fn matrix_parses_with_and_without_expected() {
+        let with_expected = serde_json::json!({
+            "module": "首页",
+            "entries": [{
+                "id": "s",
+                "name": "搜索流程",
+                "steps": [{"action": "搜索", "apis": [{"method": "POST", "path": "/api/search"}]}],
+                "expected": [
+                    {"path": "$.data.list", "op": "nonEmpty", "desc": "搜索结果非空"},
+                    {"path": "$.errorCode", "op": "eq", "value": 0}
+                ]
+            }]
+        });
+        let m: FeatureMatrix = serde_json::from_value(with_expected).unwrap();
+        let entry = &m.entries[0];
+        assert_eq!(entry.expected.len(), 2);
+        assert_eq!(entry.expected[0].op, AssertionOp::NonEmpty);
+        assert_eq!(entry.expected[1].op, AssertionOp::Eq);
+        assert_eq!(entry.expected[0].desc.as_deref(), Some("搜索结果非空"));
+
+        // 旧矩阵无 expected 字段：必须仍能解析（serde default）
+        let legacy = serde_json::json!({
+            "module": "首页",
+            "entries": [{"id": "s", "name": "搜索", "steps": []}]
+        });
+        let m: FeatureMatrix = serde_json::from_value(legacy).unwrap();
+        assert!(m.entries[0].expected.is_empty(), "旧矩阵 expected 应为空");
     }
 }
