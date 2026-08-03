@@ -61,5 +61,67 @@ class TestBuildPrompt(unittest.TestCase):
         self.assertIn("/api/login", prompt, "提示词应包含录制数据")
 
 
+class TestCallLlm(unittest.TestCase):
+    def test_call_sends_openai_compatible_request(self):
+        fake_response = json.dumps(
+            {"choices": [{"message": {"content": '{"module":"首页","entries":[]}'}}]}
+        ).encode("utf-8")
+
+        captured = {}
+
+        class FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return fake_response
+
+        def fake_urlopen(req, timeout):
+            captured["url"] = req.full_url
+            captured["auth"] = req.headers.get("Authorization")
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return FakeResp()
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            content = gm.call_llm(
+                "prompt", "KEY", "https://api.deepseek.com/v1", "deepseek-v4-flash"
+            )
+
+        self.assertEqual(content, '{"module":"首页","entries":[]}')
+        self.assertIn("/chat/completions", captured["url"])
+        self.assertEqual(captured["auth"], "Bearer KEY")
+        self.assertEqual(captured["body"]["model"], "deepseek-v4-flash")
+        self.assertEqual(captured["body"]["messages"][1]["content"], "prompt")
+
+    def test_call_retries_once_on_http_error(self):
+        import urllib.error
+
+        calls = {"n": 0}
+
+        class FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return b'{"choices":[{"message":{"content":"{}"}}]}'
+
+        def fake_urlopen(req, timeout):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise urllib.error.HTTPError(req.full_url, 429, "rate", None, None)
+            return FakeResp()
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            content = gm.call_llm("p", "K", "https://x/v1", "m")
+        self.assertEqual(calls["n"], 2, "失败应重试一次")
+        self.assertEqual(content, "{}")
+
+
 if __name__ == "__main__":
     unittest.main()

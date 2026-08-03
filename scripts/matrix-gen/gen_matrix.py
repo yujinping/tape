@@ -15,6 +15,8 @@ import argparse
 import json
 import os
 import sys
+import urllib.error
+import urllib.request
 
 DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
 DEFAULT_MODEL = "deepseek-v4-flash"
@@ -120,6 +122,37 @@ def build_prompt(records):
     lines = [json.dumps(r, ensure_ascii=False) for r in records]
     data_block = "\n".join(lines)
     return SYSTEM_PROMPT + "\n\n录制数据（JSONL，每条一行）：\n" + data_block
+
+
+def call_llm(prompt, api_key, base_url, model, temperature=0.2):
+    """调用 OpenAI 兼容 chat/completions，失败重试一次；返回 message.content。"""
+    url = base_url.rstrip("/") + "/chat/completions"
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": temperature,
+    }
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            return data["choices"][0]["message"]["content"]
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError, KeyError) as e:
+            if attempt == 1:
+                raise
+    raise RuntimeError("LLM 调用失败")  # 理论不可达，防御
 
 
 if __name__ == "__main__":
