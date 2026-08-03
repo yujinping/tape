@@ -668,6 +668,95 @@ fn load_matrix(path: Option<&Path>) -> Result<Option<FeatureMatrix>> {
     Ok(Some(m))
 }
 
+/// 从 Matched 对比项提取两遍调用序列（method path，各自按录制 id 顺序），做 LCS 对比。
+pub fn build_sequence_diff(comparisons: &[CallComparison]) -> Option<SequenceDiff> {
+    let mut base: Vec<(u64, String)> = Vec::new();
+    let mut curr: Vec<(u64, String)> = Vec::new();
+    for c in comparisons {
+        if let Some(b) = &c.baseline {
+            base.push((numeric_id(&b.id), format!("{} {}", c.method, c.path)));
+        }
+        if let Some(cur) = &c.current {
+            curr.push((numeric_id(&cur.id), format!("{} {}", c.method, c.path)));
+        }
+    }
+    if base.is_empty() && curr.is_empty() {
+        return None;
+    }
+    base.sort_by_key(|(i, _)| *i);
+    curr.sort_by_key(|(i, _)| *i);
+    let base_seq: Vec<String> = base.into_iter().map(|(_, s)| s).collect();
+    let curr_seq: Vec<String> = curr.into_iter().map(|(_, s)| s).collect();
+    Some(compare_sequences(&base_seq, &curr_seq))
+}
+
+/// 对矩阵每个功能条目，分别对基线/新版匹配接口的响应执行 expected 断言。
+pub fn run_feature_assertions(
+    matrix: Option<&FeatureMatrix>,
+    comparisons: &[CallComparison],
+) -> Vec<FeatureAssertions> {
+    let Some(m) = matrix else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in &m.entries {
+        if entry.expected.is_empty() {
+            continue;
+        }
+        let entry_apis: Vec<&MatrixApi> = entry.steps.iter().flat_map(|s| s.apis.iter()).collect();
+        let matched: Vec<&CallComparison> = comparisons
+            .iter()
+            .filter(|c| {
+                c.kind == MatchKind::Matched
+                    && entry_apis
+                        .iter()
+                        .any(|a| a.method.eq_ignore_ascii_case(&c.method) && a.path == c.path)
+            })
+            .collect();
+        if matched.is_empty() {
+            continue;
+        }
+        let mut baseline = Vec::new();
+        let mut current = Vec::new();
+        for c in &matched {
+            if let Some(b) = &c.baseline {
+                baseline.extend(eval_assertions(b, &entry.expected));
+            }
+            if let Some(cur) = &c.current {
+                current.extend(eval_assertions(cur, &entry.expected));
+            }
+        }
+        out.push(FeatureAssertions {
+            entry_id: entry.id.clone(),
+            entry_name: entry.name.clone(),
+            baseline,
+            current,
+        });
+    }
+    out
+}
+
+/// 对一次调用记录执行断言列表。
+fn eval_assertions(record: &CallRecord, assertions: &[Assertion]) -> Vec<AssertionResult> {
+    let body = crate::snapshot::decode_body(&record.response_body, &record.response_body_encoding);
+    let value: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    assertions
+        .iter()
+        .map(|a| {
+            let passed = run_assertion(&value, a);
+            let detail = json_path_get(&value, &a.path)
+                .map(|v| format!("实际值: {v}"))
+                .unwrap_or_else(|| "路径不存在".to_string());
+            AssertionResult {
+                path: a.path.clone(),
+                desc: a.desc.clone(),
+                passed,
+                detail,
+            }
+        })
+        .collect()
+}
+
 /// 渲染 Markdown 报告：按矩阵功能条目组织；无矩阵时按 path 组织。
 pub fn render_report(
     baseline_name: &str,
@@ -860,13 +949,16 @@ pub fn run(
     let comparisons = compare_dirs(baseline_dir, current_dir, &rules)?;
 
     let matrix = load_matrix(matrix_path)?;
+    // L2：业务流——调用序列对比 + 业务结果断言
+    let sequence = build_sequence_diff(&comparisons);
+    let feature_assertions = run_feature_assertions(matrix.as_ref(), &comparisons);
     let report = render_report(
         &baseline_dir.display().to_string(),
         &current_dir.display().to_string(),
         &comparisons,
         matrix.as_ref(),
-        None,
-        &[],
+        sequence.as_ref(),
+        &feature_assertions,
     );
 
     // 终端摘要

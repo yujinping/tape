@@ -1611,3 +1611,81 @@ async fn compare_end_to_end_reports_missing_and_changed() {
     let _ = std::fs::remove_dir_all(&base);
     let _ = std::fs::remove_dir_all(&curr);
 }
+
+#[tokio::test]
+async fn compare_reports_business_flow_assertions() {
+    use tape::compare::{
+        FeatureMatrix, IgnoreRules, build_sequence_diff, compare_dirs, render_report,
+        run_feature_assertions,
+    };
+
+    fn snap(id: &str, url: &str, body: &str) -> Snapshot {
+        Snapshot {
+            id: id.to_string(),
+            origin: "http://10.1.2.3:8080".to_string(),
+            recorded_at: "2026-08-02T00:00:00Z".to_string(),
+            duration_ms: 1,
+            request: RequestRecord {
+                method: "POST".to_string(),
+                url: url.to_string(),
+                headers: vec![],
+                body: String::new(),
+                body_encoding: tape::snapshot::ENCODING_UTF8.to_string(),
+            },
+            response: ResponseRecord {
+                status: 200,
+                headers: vec![],
+                body: body.to_string(),
+                body_encoding: tape::snapshot::ENCODING_UTF8.to_string(),
+            },
+        }
+    }
+
+    let base = temp_dir("m2-base");
+    let curr = temp_dir("m2-curr");
+    // 基线：搜索返回空列表 → 断言失败在基线侧；新版返回列表 → 断言通过
+    write_snapshot(
+        &base,
+        &snap(
+            "000001",
+            "http://10.1.2.3:8080/api/search",
+            r#"{"data":{"list":[]}}"#,
+        ),
+    );
+    write_snapshot(
+        &curr,
+        &snap(
+            "000001",
+            "http://10.1.2.3:8080/api/search",
+            r#"{"data":{"list":["a"]}}"#,
+        ),
+    );
+
+    let rules = IgnoreRules::default();
+    let comparisons = compare_dirs(&base, &curr, &rules).unwrap();
+    let matrix: FeatureMatrix = serde_json::from_value(serde_json::json!({
+        "module": "首页",
+        "entries": [{
+            "id": "s",
+            "name": "搜索流程",
+            "steps": [{"action": "搜索", "apis": [{"method": "POST", "path": "/api/search"}]}],
+            "expected": [{"path": "$.data.list", "op": "nonEmpty", "desc": "搜索结果非空"}]
+        }]
+    }))
+    .unwrap();
+    let sequence = build_sequence_diff(&comparisons);
+    let assertions = run_feature_assertions(Some(&matrix), &comparisons);
+    let md = render_report(
+        "基线",
+        "新版",
+        &comparisons,
+        Some(&matrix),
+        sequence.as_ref(),
+        &assertions,
+    );
+    assert!(md.contains("业务结果断言"), "报告应有断言小节: {md}");
+    assert!(md.contains("基线 0/1 通过"), "基线断言应失败: {md}");
+    assert!(md.contains("新版 1/1 通过"), "新版断言应通过: {md}");
+    let _ = std::fs::remove_dir_all(&base);
+    let _ = std::fs::remove_dir_all(&curr);
+}
