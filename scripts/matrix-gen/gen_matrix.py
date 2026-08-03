@@ -155,5 +155,42 @@ def call_llm(prompt, api_key, base_url, model, temperature=0.2):
     raise RuntimeError("LLM 调用失败")  # 理论不可达，防御
 
 
+def extract_json(text):
+    """从 LLM 返回文本中提取 JSON：剥离 Markdown 围栏。"""
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.startswith("json"):
+            text = text[4:]
+    return text
+
+
+def validate_matrix(obj):
+    """校验矩阵结构，返回 (是否合法, 错误信息)。"""
+    if not isinstance(obj, dict):
+        return False, "顶层应为对象"
+    if not isinstance(obj.get("module"), str):
+        return False, "module 应为字符串"
+    entries = obj.get("entries")
+    if not isinstance(entries, list):
+        return False, "entries 应为数组"
+    for e in entries:
+        if not isinstance(e, dict):
+            return False, "条目应为对象"
+        if not isinstance(e.get("id"), str) or not isinstance(e.get("name"), str):
+            return False, "条目 id/name 应为字符串"
+        steps = e.get("steps", [])
+        if not isinstance(steps, list):
+            return False, "steps 应为数组"
+        for s in steps:
+            apis = s.get("apis", [])
+            if not isinstance(apis, list):
+                return False, "apis 应为数组"
+            for a in apis:
+                if not isinstance(a.get("method"), str) or not isinstance(a.get("path"), str):
+                    return False, "api method/path 应为字符串"
+    return True, ""
+
+
 if __name__ == "__main__":
     sys.exit(0)

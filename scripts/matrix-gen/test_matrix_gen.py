@@ -123,5 +123,36 @@ class TestCallLlm(unittest.TestCase):
         self.assertEqual(content, "{}")
 
 
+class TestExtractAndValidate(unittest.TestCase):
+    def test_extract_json_strips_fence(self):
+        text = '```json\n{"module":"首页"}\n```'
+        self.assertEqual(gm.extract_json(text).strip(), '{"module":"首页"}')
+        self.assertEqual(
+            gm.extract_json('{"module":"首页"}').strip(), '{"module":"首页"}'
+        )
+
+    def test_validate_matrix_accepts_valid(self):
+        obj = {
+            "module": "首页",
+            "entries": [
+                {
+                    "id": "s",
+                    "name": "搜索",
+                    "steps": [
+                        {"action": "搜索", "apis": [{"method": "POST", "path": "/api/s"}]}
+                    ],
+                    "expected": [{"path": "$.data", "op": "nonEmpty"}],
+                }
+            ],
+        }
+        ok, err = gm.validate_matrix(obj)
+        self.assertTrue(ok, err)
+
+    def test_validate_matrix_rejects_missing_path(self):
+        ok, err = gm.validate_matrix({"module": "首页", "entries": [{"id": "s"}]})
+        self.assertFalse(ok)
+        self.assertIn("name", err)
+
+
 if __name__ == "__main__":
     unittest.main()
