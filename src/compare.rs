@@ -482,6 +482,69 @@ fn is_empty_value(v: &Value) -> bool {
     }
 }
 
+/// 序列对比结果：两遍录制配对接口的调用顺序差异。
+#[derive(Debug, Clone)]
+pub struct SequenceDiff {
+    /// 基线有、新版无的步骤
+    pub missing: Vec<String>,
+    /// 新版有、基线无的步骤
+    pub added: Vec<String>,
+}
+
+impl SequenceDiff {
+    pub fn is_identical(&self) -> bool {
+        self.missing.is_empty() && self.added.is_empty()
+    }
+}
+
+/// 基于最长公共子序列（LCS）的调用序列对比，容忍顺序微小差异。
+pub fn compare_sequences(baseline: &[String], current: &[String]) -> SequenceDiff {
+    let dp = lcs_table(baseline, current);
+    let mut a_in = vec![false; baseline.len()];
+    let mut b_in = vec![false; current.len()];
+    let (mut i, mut j) = (0, 0);
+    while i < baseline.len() && j < current.len() {
+        if baseline[i] == current[j] {
+            a_in[i] = true;
+            b_in[j] = true;
+            i += 1;
+            j += 1;
+        } else if dp[i + 1][j] >= dp[i][j + 1] {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    SequenceDiff {
+        missing: baseline
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| !a_in[*k])
+            .map(|(_, s)| s.clone())
+            .collect(),
+        added: current
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| !b_in[*k])
+            .map(|(_, s)| s.clone())
+            .collect(),
+    }
+}
+
+fn lcs_table<T: PartialEq>(a: &[T], b: &[T]) -> Vec<Vec<usize>> {
+    let mut dp = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for i in (0..a.len()).rev() {
+        for j in (0..b.len()).rev() {
+            dp[i][j] = if a[i] == b[j] {
+                dp[i + 1][j + 1] + 1
+            } else {
+                dp[i + 1][j].max(dp[i][j + 1])
+            };
+        }
+    }
+    dp
+}
+
 /// 对比两次调用的请求（query + body），返回人类可读差异描述；一致返回 None。
 pub fn request_diff(base: &CallRecord, current: &CallRecord) -> Option<String> {
     let mut parts = Vec::new();
@@ -1090,5 +1153,34 @@ mod tests {
             &body,
             &a("$.data.msg", AssertionOp::Contains, Some(json!("bad")))
         ));
+    }
+
+    #[test]
+    fn sequence_compare_detects_missing_added_and_identical() {
+        let base = vec![
+            "POST /api/login".to_string(),
+            "GET /api/token".to_string(),
+            "POST /api/order".to_string(),
+            "GET /api/order/1".to_string(),
+        ];
+        // 新版：少了「查订单」，多了「查余额」
+        let curr = vec![
+            "POST /api/login".to_string(),
+            "GET /api/token".to_string(),
+            "POST /api/order".to_string(),
+            "GET /api/balance".to_string(),
+        ];
+        let diff = compare_sequences(&base, &curr);
+        assert!(
+            diff.missing.iter().any(|s| s.contains("/api/order/1")),
+            "缺查订单: {diff:?}"
+        );
+        assert!(
+            diff.added.iter().any(|s| s.contains("/api/balance")),
+            "新增查余额: {diff:?}"
+        );
+
+        let same = compare_sequences(&base, &base);
+        assert!(same.is_identical(), "相同序列应一致: {same:?}");
     }
 }
