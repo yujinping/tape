@@ -423,6 +423,65 @@ fn value_summary(v: &Value) -> String {
     }
 }
 
+/// 从 JSON 中按路径取值：支持 `$.a.b[0].c` 形态（点路径 + 数字下标）。
+pub fn json_path_get<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
+    let mut cur = value;
+    let mut rest = path.strip_prefix('$').unwrap_or(path);
+    while !rest.is_empty() {
+        if let Some(r) = rest.strip_prefix('.') {
+            rest = r;
+        }
+        if let Some(r) = rest.strip_prefix('[') {
+            let end = r.find(']')?;
+            let idx: usize = r[..end].parse().ok()?;
+            cur = cur.get(idx)?;
+            rest = &r[end + 1..];
+        } else {
+            let (key, after) = split_path_key(rest);
+            cur = cur.get(key)?;
+            rest = after;
+        }
+    }
+    Some(cur)
+}
+
+fn split_path_key(rest: &str) -> (&str, &str) {
+    match rest.find(['.', '[']) {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, ""),
+    }
+}
+
+/// 对响应体执行单条断言，返回是否通过。
+pub fn run_assertion(body: &Value, a: &Assertion) -> bool {
+    let Some(v) = json_path_get(body, &a.path) else {
+        return false; // 路径不存在即不通过
+    };
+    match a.op {
+        AssertionOp::Exists => true,
+        AssertionOp::NonEmpty => !is_empty_value(v),
+        AssertionOp::Eq => a.value.as_ref().is_some_and(|t| v == t),
+        AssertionOp::Gt => match (v.as_f64(), a.value.as_ref().and_then(|t| t.as_f64())) {
+            (Some(x), Some(y)) => x > y,
+            _ => false,
+        },
+        AssertionOp::Contains => match (v.as_str(), a.value.as_ref().and_then(|t| t.as_str())) {
+            (Some(s), Some(sub)) => s.contains(sub),
+            _ => false,
+        },
+    }
+}
+
+fn is_empty_value(v: &Value) -> bool {
+    match v {
+        Value::Null => true,
+        Value::String(s) => s.is_empty(),
+        Value::Array(a) => a.is_empty(),
+        Value::Object(o) => o.is_empty(),
+        _ => false,
+    }
+}
+
 /// 对比两次调用的请求（query + body），返回人类可读差异描述；一致返回 None。
 pub fn request_diff(base: &CallRecord, current: &CallRecord) -> Option<String> {
     let mut parts = Vec::new();
@@ -711,6 +770,7 @@ pub fn run(
 mod tests {
     use super::*;
     use crate::snapshot::{ENCODING_UTF8, RequestRecord, ResponseRecord, Snapshot};
+    use serde_json::json;
 
     fn call(id: &str, url: &str, body: &str) -> Snapshot {
         Snapshot {
@@ -961,5 +1021,74 @@ mod tests {
         });
         let m: FeatureMatrix = serde_json::from_value(legacy).unwrap();
         assert!(m.entries[0].expected.is_empty(), "旧矩阵 expected 应为空");
+    }
+
+    #[test]
+    fn json_path_get_supports_dot_and_index() {
+        let v: Value =
+            serde_json::from_str(r#"{"data":{"list":[{"id":1,"name":"a"}],"token":"T"}}"#).unwrap();
+        assert_eq!(
+            json_path_get(&v, "$.data.token"),
+            Some(&Value::String("T".into()))
+        );
+        assert_eq!(
+            json_path_get(&v, "$.data.list[0].name"),
+            Some(&Value::String("a".into()))
+        );
+        assert_eq!(
+            json_path_get(&v, "$.data.list[0].id"),
+            Some(&Value::from(1))
+        );
+        assert!(json_path_get(&v, "$.data.missing").is_none());
+        assert!(json_path_get(&v, "$.data.list[9]").is_none());
+    }
+
+    #[test]
+    fn assertion_engine_covers_operators() {
+        let body: Value =
+            serde_json::from_str(r#"{"data":{"list":["a"],"code":0,"msg":"ok"},"token":"T"}"#)
+                .unwrap();
+        let a = |path: &str, op: AssertionOp, value: Option<serde_json::Value>| Assertion {
+            path: path.to_string(),
+            op,
+            value,
+            desc: None,
+        };
+        assert!(run_assertion(
+            &body,
+            &a("$.data.code", AssertionOp::Eq, Some(json!(0)))
+        ));
+        assert!(!run_assertion(
+            &body,
+            &a("$.data.code", AssertionOp::Eq, Some(json!(1)))
+        ));
+        assert!(run_assertion(
+            &body,
+            &a("$.token", AssertionOp::Exists, None)
+        ));
+        assert!(!run_assertion(
+            &body,
+            &a("$.nope", AssertionOp::Exists, None)
+        ));
+        assert!(run_assertion(
+            &body,
+            &a("$.data.list", AssertionOp::NonEmpty, None)
+        ));
+        assert!(run_assertion(
+            &body,
+            &a("$.data.code", AssertionOp::Gt, Some(json!(-1)))
+        ));
+        assert!(!run_assertion(
+            &body,
+            &a("$.data.code", AssertionOp::Gt, Some(json!(1)))
+        ));
+        assert!(run_assertion(
+            &body,
+            &a("$.data.msg", AssertionOp::Contains, Some(json!("ok")))
+        ));
+        assert!(!run_assertion(
+            &body,
+            &a("$.data.msg", AssertionOp::Contains, Some(json!("bad")))
+        ));
     }
 }
