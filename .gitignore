@@ -4,5 +4,7 @@ target/
 tape-api/
 dist/
 docs/superpowers/
+__pycache__/
+*.pyc
 
 docs/release-v0.1.0.md
