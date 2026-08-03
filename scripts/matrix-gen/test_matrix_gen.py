@@ -42,5 +42,24 @@ class TestPreviewAndRecords(unittest.TestCase):
         self.assertTrue(r["resp_body"].endswith("…"), "响应体应被截断")
 
 
+class TestBuildPrompt(unittest.TestCase):
+    def test_prompt_contains_schema_and_data(self):
+        records = [
+            {
+                "id": "000001",
+                "recorded_at": "2026-08-02T00:00:00Z",
+                "method": "POST",
+                "url": "http://h/api/login",
+                "req_body": "",
+                "status": 200,
+                "resp_body": "{}",
+            }
+        ]
+        prompt = gm.build_prompt(records)
+        self.assertIn("entries", prompt, "提示词应包含矩阵 schema")
+        self.assertIn("expected", prompt, "提示词应包含 expected 断言说明")
+        self.assertIn("/api/login", prompt, "提示词应包含录制数据")
+
+
 if __name__ == "__main__":
     unittest.main()

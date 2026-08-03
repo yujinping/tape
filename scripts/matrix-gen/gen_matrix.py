@@ -81,5 +81,46 @@ def build_records(items, body_preview):
     return records
 
 
+SYSTEM_PROMPT = """你是电视盒子 App 功能复刻验证助手。给定一段 HTTP 录制数据（旧版实跑），
+生成「功能矩阵」JSON，用于证明新版是否完整复刻旧版功能。
+
+矩阵结构：
+{
+  "module": "模块名（如 首页）",
+  "entries": [
+    {
+      "id": "短横线小写标识，如 home-search",
+      "name": "功能条目名（如 搜索流程）",
+      "steps": [
+        {
+          "action": "按钮级操作描述（如 点击搜索框 / 输入关键词 / 点击搜索按钮）",
+          "apis": [{"method": "POST", "path": "/api/search/query"}]
+        }
+      ],
+      "expected": [
+        {"path": "$.data.list", "op": "nonEmpty", "desc": "搜索结果非空"},
+        {"path": "$.errorCode", "op": "eq", "value": 0, "desc": "无错误码"}
+      ]
+    }
+  ]
+}
+
+要求：
+1. 只输出 JSON，不要输出任何解释文字或 Markdown 围栏；
+2. steps 切分到按钮级：每次用户可感知的操作（点击、输入、提交、返回）一个 step；
+3. 同一路径不同参数的多次调用归入同一 step 的 apis（用 path 去 query，只保留一次）；
+4. expected 从该接口响应推断业务结果断言，op 仅限 eq / exists / nonEmpty / gt / contains；
+   无法可靠推断时省略 expected；
+5. 接口 method 用大写。
+"""
+
+
+def build_prompt(records):
+    """把摘要记录组装成 user 消息内容。"""
+    lines = [json.dumps(r, ensure_ascii=False) for r in records]
+    data_block = "\n".join(lines)
+    return SYSTEM_PROMPT + "\n\n录制数据（JSONL，每条一行）：\n" + data_block
+
+
 if __name__ == "__main__":
     sys.exit(0)
