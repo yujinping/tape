@@ -41,6 +41,7 @@ tape 面向电视盒子、大屏与 Android 设备的**开发与调试**场景�
 - [logcat：Android 日志实时查看与自动落盘](#logcatandroid-日志实时查看与自动落盘)
 - [console：盒子 WebView 调试日志接收](#console盒子-webview-调试日志接收)
 - [app：盒子应用网络日志接收](#app盒子应用网络日志接收)
+- [功能复刻验证](#功能复刻验证)
 - [跨平台支持（Windows / macOS / Linux）](#跨平台支持windows--macos--linux)
 - [路线图（Roadmap）](#路线图roadmap)
 - [开发](#开发)
@@ -364,6 +365,18 @@ POST http://<tape-ip>:8900/   Content-Type: application/json
 
 - **端口规划**：`record` / `replay` = `8888`、`console` = `8899`、`app` = `8900`，互不冲突，可同时运行。
 - 同样支持 GET query、POST 纯文本 / 表单 / JSON，级别着色终端输出，Ctrl-C 优雅停止并打印保存路径。
+
+## 功能复刻验证
+
+用于「新版（Kotlin + MVVM）是否完整复刻旧版（Java + MVP）功能」的自动化验证：旧版实跑录制 → `tape export` 导出 → AI 生成功能矩阵草稿 → 人工校正 → 新版实跑录制 → `tape compare` 输出接口差异（L1）与业务流断言报告（L2）。
+
+```bash
+tape export ./tape-api-baseline -o baseline.jsonl
+python3 scripts/matrix-gen/gen_matrix.py baseline.jsonl -o matrix.draft.json   # 需 LLM_API_KEY
+tape compare ./tape-api-baseline ./tape-api-current --matrix matrix.json -o report.md
+```
+
+完整使用说明见 [功能复刻验证使用指南](docs/verification-design/VERIFICATION_GUIDE.md)。
 
 ## 跨平台支持（Windows / macOS / Linux）
 

@@ -28,6 +28,7 @@ tape targets the **development and debugging** of TV boxes, large-screen and And
 - [logcat: Live Android Logs with Auto-dump](#logcat-live-android-logs-with-auto-dump)
 - [console: Box WebView Debug Log Ingestion](#console-box-webview-debug-log-ingestion)
 - [app: Box App Network Log Ingestion](#app-box-app-network-log-ingestion)
+- [Feature Replication Verification](#feature-replication-verification)
 - [Cross-platform Support](#cross-platform-support-windows--macos--linux)
 - [Roadmap](#roadmap)
 - [Development](#development)
@@ -364,6 +365,18 @@ POST http://<tape-ip>:8900/   Content-Type: application/json
 
 - **Port plan**: `record` / `replay` = `8888`, `console` = `8899`, `app` = `8900` — no conflicts, all can run at once.
 - GET query, POST plain text / form / JSON, level-colored terminal output, and graceful Ctrl-C stop with the saved path all work the same way.
+
+## Feature Replication Verification
+
+Automated verification that a rewritten app (Kotlin + MVVM) fully replicates the old app's (Java + MVP) features: record the old version → `tape export` → AI-generated feature-matrix draft → manual review → record the new version → `tape compare` reports interface diffs (L1) and business-flow assertions (L2).
+
+```bash
+tape export ./tape-api-baseline -o baseline.jsonl
+python3 scripts/matrix-gen/gen_matrix.py baseline.jsonl -o matrix.draft.json   # requires LLM_API_KEY
+tape compare ./tape-api-baseline ./tape-api-current --matrix matrix.json -o report.md
+```
+
+Full usage guide (Chinese): [VERIFICATION_GUIDE.md](docs/verification-design/VERIFICATION_GUIDE.md).
 
 ## Cross-platform Support (Windows / macOS / Linux)
 
