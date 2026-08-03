@@ -14,6 +14,7 @@
 import argparse
 import json
 import os
+import ssl
 import sys
 import urllib.error
 import urllib.request
@@ -146,13 +147,28 @@ def call_llm(prompt, api_key, base_url, model, temperature=0.2):
                 },
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            kwargs = {"timeout": 120}
+            # 公司网关/代理插自签证书导致证书校验失败时，可设 LLM_SSL_NO_VERIFY=1 跳过
+            # （仅限受信任网络调试，与 tape 的 TAPE_INSECURE_TLS 同理）
+            if ssl_skip_verify():
+                kwargs["context"] = ssl._create_unverified_context()
+            with urllib.request.urlopen(req, **kwargs) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             return data["choices"][0]["message"]["content"]
         except (urllib.error.HTTPError, urllib.error.URLError, OSError, KeyError) as e:
             if attempt == 1:
                 raise
     raise RuntimeError("LLM 调用失败")  # 理论不可达，防御
+
+
+def ssl_skip_verify():
+    """LLM_SSL_NO_VERIFY=1/true/yes/on 时跳过 HTTPS 证书校验。"""
+    return os.environ.get("LLM_SSL_NO_VERIFY", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def extract_json(text):

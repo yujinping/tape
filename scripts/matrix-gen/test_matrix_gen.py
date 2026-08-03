@@ -122,6 +122,34 @@ class TestCallLlm(unittest.TestCase):
         self.assertEqual(calls["n"], 2, "失败应重试一次")
         self.assertEqual(content, "{}")
 
+    def test_ssl_no_verify_env_passes_unverified_context(self):
+        captured = {}
+
+        class FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return b'{"choices":[{"message":{"content":"{}"}}]}'
+
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["context"] = context
+            return FakeResp()
+
+        with mock.patch.dict(os.environ, {"LLM_SSL_NO_VERIFY": "1"}, clear=False):
+            with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                gm.call_llm("p", "K", "https://x/v1", "m")
+        self.assertIsNotNone(captured["context"], "启用 LLM_SSL_NO_VERIFY 应传 unverified context")
+
+        captured.clear()
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                gm.call_llm("p", "K", "https://x/v1", "m")
+        self.assertIsNone(captured.get("context"), "默认不传 context（保持证书校验）")
+
 
 class TestExtractAndValidate(unittest.TestCase):
     def test_extract_json_strips_fence(self):

@@ -10,6 +10,7 @@
 | `LLM_API_KEY` | 是 | - | DeepSeek / 通义 / OpenAI API Key |
 | `LLM_BASE_URL` | 否 | `https://api.deepseek.com/v1` | OpenAI 兼容 API 地址 |
 | `LLM_MODEL` | 否 | `deepseek-v4-flash` | 模型名 |
+| `LLM_SSL_NO_VERIFY` | 否 | 关闭 | 设为 `1` 跳过 HTTPS 证书校验（公司网关/代理插自签证书导致 `CERTIFICATE_VERIFY_FAILED` 时使用；仅限受信任网络） |
 
 ## 用法
 
