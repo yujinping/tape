@@ -1604,7 +1604,7 @@ async fn compare_end_to_end_reports_missing_and_changed() {
         ]
     });
     let matrix: FeatureMatrix = serde_json::from_value(matrix).unwrap();
-    let md = render_report("基线", "新版", &result, Some(&matrix));
+    let md = render_report("基线", "新版", &result, Some(&matrix), None, &[]);
     assert!(md.contains("缺失"), "报告应有汇总: {md}");
     assert!(md.contains("❌ 搜索流程"), "搜索响应变更应标问题: {md}");
     assert!(md.contains("$.list"), "差异应定位到字段: {md}");

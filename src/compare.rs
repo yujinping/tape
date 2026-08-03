@@ -497,6 +497,24 @@ impl SequenceDiff {
     }
 }
 
+/// 一次断言执行结果。
+#[derive(Debug, Clone)]
+pub struct AssertionResult {
+    pub path: String,
+    pub desc: Option<String>,
+    pub passed: bool,
+    pub detail: String,
+}
+
+/// 一个功能条目的业务断言结果。
+#[derive(Debug, Clone)]
+pub struct FeatureAssertions {
+    pub entry_id: String,
+    pub entry_name: String,
+    pub baseline: Vec<AssertionResult>,
+    pub current: Vec<AssertionResult>,
+}
+
 /// 基于最长公共子序列（LCS）的调用序列对比，容忍顺序微小差异。
 pub fn compare_sequences(baseline: &[String], current: &[String]) -> SequenceDiff {
     let dp = lcs_table(baseline, current);
@@ -656,6 +674,8 @@ pub fn render_report(
     current_name: &str,
     comparisons: &[CallComparison],
     matrix: Option<&FeatureMatrix>,
+    sequence: Option<&SequenceDiff>,
+    assertions: &[FeatureAssertions],
 ) -> String {
     let mut md = String::new();
     md.push_str(&format!(
@@ -686,6 +706,53 @@ pub fn render_report(
     md.push_str(&format!(
         "## 汇总\n\n- 一致：{identical}\n- 变更：{changed}\n- 缺失：{missing}\n- 新增：{added}\n\n"
     ));
+
+    if let Some(seq) = sequence {
+        md.push_str("## 业务流验证\n\n### 调用序列\n\n");
+        if seq.is_identical() {
+            md.push_str("- ✅ 调用序列一致\n\n");
+        } else {
+            if !seq.missing.is_empty() {
+                md.push_str("- ❌ 缺失步骤：\n");
+                for s in &seq.missing {
+                    md.push_str(&format!("  - {s}\n"));
+                }
+            }
+            if !seq.added.is_empty() {
+                md.push_str("- ➕ 新增步骤：\n");
+                for s in &seq.added {
+                    md.push_str(&format!("  - {s}\n"));
+                }
+            }
+            md.push('\n');
+        }
+        if !assertions.is_empty() {
+            md.push_str("### 业务结果断言\n\n");
+            for fa in assertions {
+                let b_passed = fa.baseline.iter().filter(|r| r.passed).count();
+                let c_passed = fa.current.iter().filter(|r| r.passed).count();
+                let all_ok = fa.current.iter().all(|r| r.passed);
+                md.push_str(&format!(
+                    "- {} {}：基线 {}/{} 通过，新版 {}/{} 通过\n",
+                    if all_ok { "✅" } else { "❌" },
+                    fa.entry_name,
+                    b_passed,
+                    fa.baseline.len(),
+                    c_passed,
+                    fa.current.len()
+                ));
+                for r in fa.current.iter().filter(|r| !r.passed) {
+                    md.push_str(&format!(
+                        "  - ❌ `{}` {}：{}\n",
+                        r.path,
+                        r.desc.as_deref().unwrap_or(""),
+                        r.detail
+                    ));
+                }
+            }
+            md.push('\n');
+        }
+    }
 
     if let Some(m) = matrix {
         md.push_str("## 按功能条目\n\n");
@@ -798,6 +865,8 @@ pub fn run(
         &current_dir.display().to_string(),
         &comparisons,
         matrix.as_ref(),
+        None,
+        &[],
     );
 
     // 终端摘要
@@ -1050,7 +1119,7 @@ mod tests {
             ]
         });
         let matrix: FeatureMatrix = serde_json::from_value(matrix).unwrap();
-        let md = render_report("基线-旧版", "新版", &result, Some(&matrix));
+        let md = render_report("基线-旧版", "新版", &result, Some(&matrix), None, &[]);
         assert!(md.contains("搜索流程"), "报告应按功能条目组织: {md}");
         assert!(md.contains("首页加载"), "报告应包含未缺失条目: {md}");
         assert!(md.contains("缺失"), "报告应含三分类汇总: {md}");
@@ -1182,5 +1251,46 @@ mod tests {
 
         let same = compare_sequences(&base, &base);
         assert!(same.is_identical(), "相同序列应一致: {same:?}");
+    }
+
+    #[test]
+    fn report_includes_business_flow_section() {
+        let rules = IgnoreRules::default();
+        let base = vec![CallRecord::from_snapshot(&call(
+            "000001",
+            "http://10.1.2.3:8080/api/search?kw=电影",
+            "",
+        ))];
+        let curr = vec![CallRecord::from_snapshot(&call(
+            "000001",
+            "http://10.1.2.3:8080/api/search?kw=电影",
+            "",
+        ))];
+        let comparisons = align_calls(&base, &curr, &rules);
+        let seq = compare_sequences(
+            &["POST /api/search".to_string()],
+            &["POST /api/search".to_string()],
+        );
+        let fas = vec![FeatureAssertions {
+            entry_id: "s".into(),
+            entry_name: "搜索流程".into(),
+            baseline: vec![AssertionResult {
+                path: "$.data.list".into(),
+                desc: Some("列表非空".into()),
+                passed: true,
+                detail: "ok".into(),
+            }],
+            current: vec![AssertionResult {
+                path: "$.data.list".into(),
+                desc: Some("列表非空".into()),
+                passed: false,
+                detail: "空列表".into(),
+            }],
+        }];
+        let md = render_report("基线", "新版", &comparisons, None, Some(&seq), &fas);
+        assert!(md.contains("业务流验证"), "应有业务流小节: {md}");
+        assert!(md.contains("调用序列"), "应有序列小节: {md}");
+        assert!(md.contains("❌ 搜索流程"), "断言失败条目应标红: {md}");
+        assert!(md.contains("空列表"), "应包含断言失败原因: {md}");
     }
 }
