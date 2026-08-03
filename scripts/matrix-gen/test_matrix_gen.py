@@ -154,5 +154,55 @@ class TestExtractAndValidate(unittest.TestCase):
         self.assertIn("name", err)
 
 
+class TestMain(unittest.TestCase):
+    def test_main_writes_valid_matrix_draft(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
+            f.write(
+                '{"id":"000001","recorded_at":"2026-08-02T00:00:00Z",'
+                '"request":{"method":"POST","url":"http://h/api/login","body":""},'
+                '"response":{"status":200,"body":"{\\"token\\":\\"T\\"}"}}\n'
+            )
+            inp = f.name
+        out = inp + ".matrix.json"
+
+        llm_result = (
+            '{"module":"首页","entries":[{"id":"login","name":"登录",'
+            '"steps":[{"action":"输入账号密码并登录","apis":[{"method":"POST","path":"/api/login"}]}],'
+            '"expected":[{"path":"$.token","op":"exists","desc":"返回 token"}]}]}'
+        )
+
+        class FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {"choices": [{"message": {"content": llm_result}}]}
+                ).encode("utf-8")
+
+        with mock.patch(
+            "urllib.request.urlopen",
+            return_value=FakeResp(),
+        ):
+            with mock.patch.dict(os.environ, {"LLM_API_KEY": "K"}, clear=False):
+                rc = gm.main([inp, "-o", out])
+
+        self.assertEqual(rc, 0)
+        with open(out, encoding="utf-8") as f:
+            matrix = json.load(f)
+        self.assertEqual(matrix["entries"][0]["id"], "login")
+        self.assertEqual(matrix["entries"][0]["expected"][0]["op"], "exists")
+        os.unlink(inp)
+        os.unlink(out)
+
+    def test_main_exits_on_missing_api_key(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            rc = gm.main(["x.jsonl"])
+        self.assertEqual(rc, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

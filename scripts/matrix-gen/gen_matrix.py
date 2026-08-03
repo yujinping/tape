@@ -192,5 +192,55 @@ def validate_matrix(obj):
     return True, ""
 
 
+def main(argv=None):
+    """主流程：读数据 → 摘要 → 提示词 → LLM → 校验 → 落盘。返回退出码。"""
+    args = parse_args(argv)
+    api_key = os.environ.get("LLM_API_KEY")
+    if not api_key:
+        print("错误：请设置 LLM_API_KEY 环境变量", file=sys.stderr)
+        return 1
+    base_url = os.environ.get("LLM_BASE_URL", DEFAULT_BASE_URL)
+    model = os.environ.get("LLM_MODEL", DEFAULT_MODEL)
+
+    items = load_jsonl(args.input)
+    if len(items) > args.max_items:
+        print(
+            f"错误：数据 {len(items)} 条超过单次上限 {args.max_items}，请分段导出",
+            file=sys.stderr,
+        )
+        return 1
+    if not items:
+        print("错误：输入文件为空", file=sys.stderr)
+        return 1
+
+    records = build_records(items, args.body_preview)
+    prompt = build_prompt(records)
+    try:
+        content = call_llm(prompt, api_key, base_url, model)
+    except Exception as e:  # noqa: BLE001
+        print(f"错误：LLM 调用失败：{e}", file=sys.stderr)
+        return 1
+
+    try:
+        obj = json.loads(extract_json(content))
+    except json.JSONDecodeError as e:
+        print(f"错误：LLM 返回不是合法 JSON：{e}", file=sys.stderr)
+        return 1
+    ok, err = validate_matrix(obj)
+    if not ok:
+        print(f"错误：矩阵校验失败：{err}", file=sys.stderr)
+        return 1
+
+    with open(args.output, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+    n_entries = len(obj["entries"])
+    n_apis = sum(
+        len(s.get("apis", [])) for e in obj["entries"] for s in e.get("steps", [])
+    )
+    print(f"矩阵草稿已生成：{n_entries} 个功能条目、{n_apis} 个接口 -> {args.output}")
+    print("请人工校正后用于 tape compare --matrix")
+    return 0
+
+
 if __name__ == "__main__":
-    sys.exit(0)
+    sys.exit(main())
