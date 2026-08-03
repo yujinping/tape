@@ -23,5 +23,24 @@ class TestLoadJsonl(unittest.TestCase):
             gm.load_jsonl("/nonexistent/x.jsonl")
 
 
+class TestPreviewAndRecords(unittest.TestCase):
+    def test_preview_truncates_long_text(self):
+        self.assertEqual(gm.preview_text("abc", 2), "ab…")
+        self.assertEqual(gm.preview_text("ab", 5), "ab")
+
+    def test_build_records_extracts_summary(self):
+        item = {
+            "id": "000001",
+            "recorded_at": "2026-08-02T00:00:00Z",
+            "request": {"method": "POST", "url": "http://h/api/login", "body": '{"user":"a"}'},
+            "response": {"status": 200, "body": '{"token":"T"}'},
+        }
+        r = gm.build_records([item], 10)[0]
+        self.assertEqual(r["method"], "POST")
+        self.assertEqual(r["url"], "http://h/api/login")
+        self.assertEqual(r["status"], 200)
+        self.assertTrue(r["resp_body"].endswith("…"), "响应体应被截断")
+
+
 if __name__ == "__main__":
     unittest.main()

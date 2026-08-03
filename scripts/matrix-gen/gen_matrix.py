@@ -53,5 +53,33 @@ def load_jsonl(path):
     return items
 
 
+def preview_text(text, limit):
+    """截断文本到 limit 字符（尾部加省略号）；None/非字符串安全处理。"""
+    if text is None:
+        return ""
+    text = str(text)
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def build_records(items, body_preview):
+    """把 tape 快照转换为供提示词使用的摘要记录列表。"""
+    records = []
+    for it in items:
+        req = it.get("request", {})
+        resp = it.get("response", {})
+        records.append(
+            {
+                "id": it.get("id"),
+                "recorded_at": it.get("recorded_at"),
+                "method": req.get("method"),
+                "url": req.get("url"),
+                "req_body": preview_text(req.get("body", ""), body_preview),
+                "status": resp.get("status"),
+                "resp_body": preview_text(resp.get("body", ""), body_preview),
+            }
+        )
+    return records
+
+
 if __name__ == "__main__":
     sys.exit(0)
