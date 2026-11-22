@@ -1,5 +1,5 @@
-use hyper::Uri;
-use hyper::header::HeaderName;
+use hyper::header::{HOST, HeaderName};
+use hyper::{Request, Uri};
 
 /// 解析出的代理请求目标。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,6 +80,49 @@ pub fn parse_proxy_target(uri: &Uri) -> Option<RequestTarget> {
         authority: authority.to_string(),
         path_and_query,
         prefix: true,
+    })
+}
+
+/// 解析透明模式目标：请求行是普通 origin-form（`GET /api/x`），目标主机只能来自 Host 头。
+///
+/// 只支持 http（透明模式不做 CONNECT/MITM，https 由网络层放行）。Host 缺失或非法时返回
+/// `None`，由调用方报 400——没有 Host 就无法知道该转发到哪里。
+pub fn parse_transparent_target<B>(req: &Request<B>) -> Option<RequestTarget> {
+    if req.uri().scheme_str().is_some() || req.uri().authority().is_some() {
+        return None;
+    }
+    // 前缀式路径（`/http://host/...`）由 parse_proxy_target 处理；这里再挡一次，
+    // 避免调用顺序变化时把前缀式请求误当透明目标。
+    let path = req.uri().path();
+    if path.len() > 7 {
+        let head = path[..7].to_ascii_lowercase();
+        if head.starts_with("/http:/") {
+            return None;
+        }
+    }
+    let host = req.headers().get(HOST)?.to_str().ok()?.trim();
+    // Authority 解析会拒绝 `host/path`、空白、非法端口等形态，避免把 Host 当成 URL 拼接
+    let authority = host.parse::<hyper::http::uri::Authority>().ok()?;
+    // Host 头不应带 userinfo（`user@host`），拒绝以免被拼成带认证信息的 URL
+    if authority.host().is_empty() || authority.as_str().contains('@') {
+        return None;
+    }
+    Some(RequestTarget {
+        scheme: "http".to_string(),
+        authority: authority.as_str().to_string(),
+        path_and_query: req
+            .uri()
+            .path_and_query()
+            .map(|p| {
+                let s = p.as_str();
+                if s.is_empty() {
+                    "/".to_string()
+                } else {
+                    s.to_string()
+                }
+            })
+            .unwrap_or_else(|| "/".to_string()),
+        prefix: false,
     })
 }
 
@@ -293,6 +336,73 @@ mod tests {
     #[test]
     fn plain_origin_form_is_none() {
         assert!(parse_proxy_target(&uri("/api/user?x=1")).is_none());
+    }
+
+    #[test]
+    fn transparent_target_comes_from_host_header() {
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/user?x=1")
+            .header(HOST, "10.1.2.3:8080")
+            .body(())
+            .unwrap();
+        let t = parse_transparent_target(&req).unwrap();
+        assert_eq!(t.scheme, "http");
+        assert_eq!(t.authority, "10.1.2.3:8080");
+        assert_eq!(t.path_and_query, "/api/user?x=1");
+        assert!(!t.prefix);
+    }
+
+    #[test]
+    fn transparent_target_defaults_to_root_path() {
+        let req = Request::builder()
+            .method("GET")
+            .uri("/")
+            .header(HOST, "api.example.com")
+            .body(())
+            .unwrap();
+        let t = parse_transparent_target(&req).unwrap();
+        assert_eq!(t.authority, "api.example.com");
+        assert_eq!(t.path_and_query, "/");
+    }
+
+    #[test]
+    fn transparent_target_rejects_missing_or_bad_host() {
+        // 没有 Host：不知道转发去哪
+        let req = Request::builder().uri("/api").body(()).unwrap();
+        assert!(parse_transparent_target(&req).is_none());
+        // Host 带路径/空白
+        let req = Request::builder()
+            .uri("/api")
+            .header(HOST, "10.1.2.3/api")
+            .body(())
+            .unwrap();
+        assert!(parse_transparent_target(&req).is_none());
+        // Host 带 userinfo
+        let req = Request::builder()
+            .uri("/api")
+            .header(HOST, "user@10.1.2.3")
+            .body(())
+            .unwrap();
+        assert!(parse_transparent_target(&req).is_none());
+    }
+
+    #[test]
+    fn transparent_target_ignores_proxy_and_prefix_forms() {
+        // absolute-form 由 parse_proxy_target 处理，不能当透明模式
+        let req = Request::builder()
+            .uri("http://10.1.2.3:8080/api")
+            .header(HOST, "10.1.2.3:8080")
+            .body(())
+            .unwrap();
+        assert!(parse_transparent_target(&req).is_none());
+        // 前缀式同理
+        let req = Request::builder()
+            .uri("/http://10.1.2.3:8080/api")
+            .header(HOST, "127.0.0.1:8888")
+            .body(())
+            .unwrap();
+        assert!(parse_transparent_target(&req).is_none());
     }
 
     #[test]

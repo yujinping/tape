@@ -61,3 +61,20 @@ include_hosts_regex = [
 # 需包含协议、主机与端口，建议以 / 结尾，默认 http://127.0.0.1:8888/。
 # 命令行 --absolute-base 优先。
 # absolute_base = "http://127.0.0.1:8888/"
+
+# ===========================================================================
+# [transparent]：透明模式（盒子不改 App、不配代理）
+# ===========================================================================
+# 开启后 tape 只处理 origin-form 请求（GET /api/x + Host 头），按 Host 决定
+# 转发目标；需要由网络侧（盒子网关 / 路由器 DNAT / 笔记本网关）把流量导进来。
+# 命令行 --transparent / --transparent-allow-port / --transparent-allow-host 优于此表。
+[transparent]
+# 是否随 record 启动透明模式。
+enabled = false
+
+# 目标端口白名单：必填且不能为空，支持 "80" 与 "8080-8090" 写法。
+# 只放行业务端口，避免 tape 变成内网跳板。
+allow_ports = ["80", "8080-8090"]
+
+# 目标主机白名单：可留空表示不限制；"*.foo.com" 只匹配 foo.com 的子域。
+allow_hosts = ["*.company.com"]

@@ -13,11 +13,13 @@ use crate::config::DEFAULT_PORT;
 )]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// 管理界面：浏览器里查看状态、录制、回放与设置（不带子命令时默认进入）
+    Admin(AdminArgs),
     /// 录制模式：本地正向 HTTP 代理，录制全部流量到快照目录
     Record(RecordArgs),
     /// 重放模式：本地离线服务，按 method+path 匹配快照并返回改写后的响应
@@ -34,6 +36,41 @@ pub enum Command {
     Export(ExportArgs),
     /// 对比两个录制目录：三层对齐 + JSON diff + Markdown 报告
     Compare(CompareArgs),
+}
+
+#[derive(Args)]
+pub struct AdminArgs {
+    /// 快照数据目录（默认当前目录下 tape-api）
+    #[arg(short, long, default_value = "./tape-api")]
+    pub dir: PathBuf,
+    /// 管理界面监听端口（默认 8890，只绑本机回环）
+    #[arg(short, long, default_value_t = 8890)]
+    pub port: u16,
+    /// 管理界面监听地址（默认 127.0.0.1；要让别的机器访问再改成 0.0.0.0）
+    #[arg(long, default_value = "127.0.0.1")]
+    pub bind: IpAddr,
+    /// 不自动打开浏览器
+    #[arg(long)]
+    pub no_open: bool,
+    /// 录制服务默认端口（界面里「开始录制」使用）
+    #[arg(long, default_value_t = DEFAULT_PORT)]
+    pub record_port: u16,
+    /// 日志详细程度（可重复 -v）
+    #[arg(short, long, action = ArgAction::Count)]
+    pub verbose: u8,
+}
+
+impl Default for AdminArgs {
+    fn default() -> Self {
+        Self {
+            dir: PathBuf::from("./tape-api"),
+            port: 8890,
+            bind: "127.0.0.1".parse().expect("回环地址合法"),
+            no_open: false,
+            record_port: DEFAULT_PORT,
+            verbose: 0,
+        }
+    }
 }
 
 #[derive(Args)]
@@ -57,6 +94,18 @@ pub struct RecordArgs {
     /// 录制时同步改写回传给 APP 的响应（默认原样回传，保证录制保真）
     #[arg(long)]
     pub rewrite_on_record: bool,
+    /// 启用透明模式：接受普通 origin-form 请求（盒子把网关指到本机、iptables DNAT
+    /// 或透明劫持进来），按 Host 头转发。只支持 http；必须同时给端口白名单
+    #[arg(long)]
+    pub transparent: bool,
+    /// 透明模式目标端口白名单，逗号分隔，支持区间（如 80,8080,9000-9010）。
+    /// 只放行业务常用端口，避免 tape 变成开放代理/内网跳板
+    #[arg(long, value_name = "PORTS", value_delimiter = ',')]
+    pub transparent_allow_port: Vec<String>,
+    /// 透明模式目标主机白名单，逗号分隔，支持 *.example.com；缺省不限制主机
+    /// （端口白名单仍然生效）
+    #[arg(long, value_name = "HOSTS", value_delimiter = ',')]
+    pub transparent_allow_host: Vec<String>,
     /// 录制过滤配置文件（TOML，见 README；[record] 表支持 include_hosts 数组
     /// 与 include_hosts_regex 正则数组）；不传则默认读取数据目录下的
     /// tape-config.toml（不存在则录制全部）。未匹配的请求仍会正常转发，只是不落快照

@@ -8,3 +8,7 @@ __pycache__/
 *.pyc
 
 docs/release-v0.1.0.md
+
+# 管理界面：提交构建产物，忽略依赖
+!web/dist/
+web/node_modules/

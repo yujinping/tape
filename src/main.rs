@@ -1,12 +1,20 @@
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use tape::{app, cli, compare, config, console, export, list, logcat, record, replay};
+use tape::{admin, app, cli, compare, config, console, export, list, logcat, record, replay};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = cli::Cli::parse();
-    match cli.command {
+    // 不带子命令时进入管理界面：双击可执行文件即可使用。
+    match cli
+        .command
+        .unwrap_or_else(|| cli::Command::Admin(cli::AdminArgs::default()))
+    {
+        cli::Command::Admin(args) => {
+            init_tracing(args.verbose);
+            admin::run(args).await
+        }
         cli::Command::Record(args) => {
             init_tracing(args.verbose);
             let cfg = config::record_config(
@@ -15,6 +23,9 @@ async fn main() -> anyhow::Result<()> {
                 args.dir,
                 args.rewrite_on_record,
                 args.config,
+                args.transparent,
+                args.transparent_allow_port,
+                args.transparent_allow_host,
             )?;
             record::run(cfg).await
         }

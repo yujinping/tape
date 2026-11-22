@@ -1,0 +1,69 @@
+@import "tailwindcss";
+
+@theme {
+  --color-canvas: #e7ebed;
+  --color-panel: #fcfcfb;
+  --color-ink: #101820;
+  --color-muted: #5c6b74;
+  --color-faint: #8b989f;
+  --color-line: #c9d3d8;
+  --color-rail: #16212a;
+  --color-railsoft: #22303b;
+  --color-amber: #c07d12;
+  --color-amber-soft: #f1d9a8;
+  --color-rec: #b8342a;
+  --color-ok: #1f7a4d;
+
+  --font-sans: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+}
+
+@layer base {
+  html {
+    background: var(--color-canvas);
+  }
+
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    color: var(--color-ink);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: #efcf92;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-amber);
+    outline-offset: 2px;
+  }
+
+  button {
+    cursor: pointer;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+  }
+}
+
+@layer utilities {
+  /* 仪表读数：等宽、对齐、收紧字距 */
+  .readout {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.03em;
+  }
+
+  .hairline {
+    border-color: var(--color-line);
+  }
+}
+
+/* 细滚动条，避免在深色栏上出现亮块 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #b6c1c7 transparent;
+}

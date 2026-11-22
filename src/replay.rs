@@ -133,10 +133,16 @@ pub async fn accept_loop(listener: TcpListener, state: Arc<ReplayState>) -> Resu
 }
 
 async fn serve_conn(state: Arc<ReplayState>, stream: TcpStream, _addr: SocketAddr) -> Result<()> {
+    // 健康检查要判断 Host 是否指向 tape 自身；用连接的本端口最准确
+    // （配置端口与实际监听端口一致，测试里监听的是临时端口）。
+    let local_port = stream
+        .local_addr()
+        .map(|addr| addr.port())
+        .unwrap_or(crate::config::DEFAULT_PORT);
     let io = TokioIo::new(stream);
     let service = service_fn(move |req| {
         let state = state.clone();
-        async move { Ok::<_, std::convert::Infallible>(handle_request(state, req).await) }
+        async move { Ok::<_, std::convert::Infallible>(handle_request(state, req, local_port).await) }
     });
     http1::Builder::new()
         .keep_alive(true)
@@ -149,7 +155,11 @@ async fn serve_conn(state: Arc<ReplayState>, stream: TcpStream, _addr: SocketAdd
 pub async fn handle_request(
     state: Arc<ReplayState>,
     req: Request<Incoming>,
+    local_port: u16,
 ) -> Response<Full<Bytes>> {
+    if crate::health::is_request(&req, local_port) {
+        return crate::health::response("replay");
+    }
     let method = req.method().to_string();
     let host = req
         .headers()

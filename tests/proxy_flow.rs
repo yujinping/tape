@@ -14,6 +14,7 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use rustls::pki_types::PrivateKeyDer;
 use std::io::Write;
+use tape::config::TransparentConfig;
 use tape::download::ResourceStore;
 use tape::record::{RecordState, accept_loop as record_accept_loop};
 use tape::replay::{ReplayState, accept_loop as replay_accept_loop};
@@ -1688,4 +1689,296 @@ async fn compare_reports_business_flow_assertions() {
     assert!(md.contains("新版 1/1 通过"), "新版断言应通过: {md}");
     let _ = std::fs::remove_dir_all(&base);
     let _ = std::fs::remove_dir_all(&curr);
+}
+
+#[tokio::test]
+async fn health_endpoint_reports_record_mode_without_recording() {
+    let dir = temp_dir("health-record");
+    let state = RecordState::new(dir.clone(), false, tape::config::RecordFilter::all()).unwrap();
+    let listener = free_listener().await;
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(record_accept_loop(listener, state));
+
+    let resp = raw_request(
+        addr,
+        "GET /health HTTP/1.1",
+        &format!("127.0.0.1:{}", addr.port()),
+    )
+    .await;
+    assert!(resp.contains("200 OK"), "应返回 200: {resp}");
+    assert!(resp.contains(r#""ok":true"#), "应包含 ok: {resp}");
+    assert!(
+        resp.contains(r#""mode":"record""#),
+        "应报告 record 模式: {resp}"
+    );
+    assert!(
+        resp.contains(env!("CARGO_PKG_VERSION")),
+        "应包含版本号: {resp}"
+    );
+
+    // 健康检查不应落快照
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        tape::store::load_snapshots(&dir).unwrap().is_empty(),
+        "健康检查不应产生录制数据"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn health_endpoint_reports_replay_mode() {
+    let dir = temp_dir("health-replay");
+    std::fs::create_dir_all(&dir).unwrap();
+    let state = ReplayState::new(dir.clone(), RewriteRule::None).unwrap();
+    let listener = free_listener().await;
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(replay_accept_loop(listener, state));
+
+    let resp = raw_request(
+        addr,
+        "GET /health HTTP/1.1",
+        &format!("127.0.0.1:{}", addr.port()),
+    )
+    .await;
+    assert!(resp.contains("200 OK"), "应返回 200: {resp}");
+    assert!(resp.contains(r#""ok":true"#), "应包含 ok: {resp}");
+    assert!(
+        resp.contains(r#""mode":"replay""#),
+        "应报告 replay 模式: {resp}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn proxy_request_to_upstream_health_is_forwarded() {
+    let origin = spawn_origin().await;
+    let dir = temp_dir("health-forward");
+    let state = RecordState::new(dir.clone(), false, tape::config::RecordFilter::all()).unwrap();
+    let listener = free_listener().await;
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(record_accept_loop(listener, state));
+
+    // 正向代理到上游 /health：必须转发给上游，不能被健康检查拦截
+    let target = format!("http://127.0.0.1:{}/health", origin.port());
+    let resp = raw_proxy_get(addr, &target).await;
+    assert!(resp.contains(r#""name":"x""#), "应转发上游响应: {resp}");
+    assert!(
+        !resp.contains(r#""mode":"record""#),
+        "不应返回 tape 自身的健康信息: {resp}"
+    );
+
+    let snap_dir = dir.join("snapshots");
+    assert!(
+        wait_until(
+            || std::fs::read_dir(&snap_dir)
+                .map(|mut it| it.any(|e| e.unwrap().path().is_dir()))
+                .unwrap_or(false),
+            Duration::from_secs(3)
+        )
+        .await,
+        "上游 /health 请求应正常录制"
+    );
+    let snaps = tape::store::load_snapshots(&dir).unwrap();
+    assert_eq!(snaps.len(), 1);
+    assert_eq!(snaps[0].request.url, target);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------- 透明模式 ----------
+
+/// 本地 mock 上游：回显收到的 Accept-Encoding。
+async fn spawn_origin_echo_accept_encoding() -> SocketAddr {
+    let listener = free_listener().await;
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
+            let io = TokioIo::new(stream);
+            let svc = service_fn(|req: Request<Incoming>| async move {
+                let ae = req
+                    .headers()
+                    .get(hyper::header::ACCEPT_ENCODING)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("<none>")
+                    .to_string();
+                Ok::<_, std::convert::Infallible>(
+                    Response::builder()
+                        .status(200)
+                        .header("content-type", "text/plain")
+                        .body(Full::new(Bytes::from(format!("AE={ae}"))))
+                        .unwrap(),
+                )
+            });
+            tokio::spawn(async move {
+                let _ = http1::Builder::new().serve_connection(io, svc).await;
+            });
+        }
+    });
+    addr
+}
+
+fn transparent_cfg(
+    ports: &[u16],
+    hosts: &[&str],
+    bind: &str,
+    listen_port: u16,
+) -> TransparentConfig {
+    TransparentConfig::parse(
+        &ports.iter().map(u16::to_string).collect::<Vec<_>>(),
+        &hosts.iter().map(|h| h.to_string()).collect::<Vec<_>>(),
+        bind.parse().unwrap(),
+        listen_port,
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn record_transparent_forwards_by_host_and_keeps_it() {
+    let origin = spawn_origin_echo_host().await;
+    let dir = temp_dir("transparent-forward");
+    let listener = free_listener().await;
+    let proxy_addr = listener.local_addr().unwrap();
+    let cfg = transparent_cfg(&[origin.port()], &[], "127.0.0.1", proxy_addr.port());
+    let state = RecordState::new_with(
+        dir.clone(),
+        false,
+        tape::config::RecordFilter::all(),
+        Some(cfg),
+        proxy_addr.port(),
+    )
+    .unwrap();
+    tokio::spawn(record_accept_loop(listener, state));
+
+    let host = format!("127.0.0.1:{}", origin.port());
+    let resp = raw_request(proxy_addr, "GET /api/user?x=1 HTTP/1.1", &host).await;
+    assert!(resp.contains("200 OK"), "{resp}");
+    // 透明模式必须原样保留 Host，否则上游虚拟主机路由/签名会失效
+    assert!(resp.contains(&format!("HOST={host}")), "{resp}");
+
+    let snaps = tape::store::load_snapshots(&dir).unwrap();
+    assert_eq!(snaps.len(), 1);
+    assert_eq!(snaps[0].request.url, format!("http://{host}/api/user?x=1"));
+    assert_eq!(snaps[0].request.method, "GET");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn record_transparent_rejects_unlisted_port() {
+    let origin = spawn_origin_echo_host().await;
+    let dir = temp_dir("transparent-deny-port");
+    let listener = free_listener().await;
+    let proxy_addr = listener.local_addr().unwrap();
+    // 只放行 8080，实际目标是临时端口 -> 必须拒绝，且不能产生快照
+    let cfg = transparent_cfg(&[8080], &[], "127.0.0.1", proxy_addr.port());
+    let state = RecordState::new_with(
+        dir.clone(),
+        false,
+        tape::config::RecordFilter::all(),
+        Some(cfg),
+        proxy_addr.port(),
+    )
+    .unwrap();
+    tokio::spawn(record_accept_loop(listener, state));
+
+    let host = format!("127.0.0.1:{}", origin.port());
+    let resp = raw_request(proxy_addr, "GET /api/user HTTP/1.1", &host).await;
+    assert!(resp.contains("403"), "{resp}");
+    assert!(resp.contains("白名单"), "{resp}");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(tape::store::load_snapshots(&dir).unwrap().is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn record_transparent_rejects_self_target() {
+    let dir = temp_dir("transparent-loop");
+    let listener = free_listener().await;
+    let proxy_addr = listener.local_addr().unwrap();
+    let cfg = transparent_cfg(&[proxy_addr.port()], &[], "127.0.0.1", proxy_addr.port());
+    let state = RecordState::new_with(
+        dir.clone(),
+        false,
+        tape::config::RecordFilter::all(),
+        Some(cfg),
+        proxy_addr.port(),
+    )
+    .unwrap();
+    tokio::spawn(record_accept_loop(listener, state));
+
+    let host = format!("127.0.0.1:{}", proxy_addr.port());
+    let resp = raw_request(proxy_addr, "GET /api/user HTTP/1.1", &host).await;
+    assert!(resp.contains("400"), "{resp}");
+    assert!(resp.contains("回环"), "{resp}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn record_transparent_upstream_health_is_forwarded_not_swallowed() {
+    let origin = spawn_origin().await;
+    let dir = temp_dir("transparent-health");
+    let listener = free_listener().await;
+    let proxy_addr = listener.local_addr().unwrap();
+    let cfg = transparent_cfg(&[origin.port()], &[], "127.0.0.1", proxy_addr.port());
+    let state = RecordState::new_with(
+        dir.clone(),
+        false,
+        tape::config::RecordFilter::all(),
+        Some(cfg),
+        proxy_addr.port(),
+    )
+    .unwrap();
+    tokio::spawn(record_accept_loop(listener, state));
+
+    let host = format!("127.0.0.1:{}", origin.port());
+    // 上游的 /health：必须转发，不能被 tape 的健康检查吞掉
+    let resp = raw_request(proxy_addr, "GET /health HTTP/1.1", &host).await;
+    assert!(resp.contains("\"name\":\"x\""), "{resp}");
+    assert!(!resp.contains("\"mode\":\"record\""), "{resp}");
+    let snaps = tape::store::load_snapshots(&dir).unwrap();
+    assert_eq!(snaps.len(), 1);
+    assert_eq!(snaps[0].request.url, format!("http://{host}/health"));
+
+    // tape 自己的健康检查：显式路径，不落快照
+    let resp = raw_request(proxy_addr, "GET /__tape/health HTTP/1.1", &host).await;
+    assert!(resp.contains("\"mode\":\"record\""), "{resp}");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(tape::store::load_snapshots(&dir).unwrap().len(), 1);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn record_transparent_passes_accept_encoding_through() {
+    let origin = spawn_origin_echo_accept_encoding().await;
+    let dir = temp_dir("transparent-ae");
+    let listener = free_listener().await;
+    let proxy_addr = listener.local_addr().unwrap();
+    let cfg = transparent_cfg(&[origin.port()], &[], "127.0.0.1", proxy_addr.port());
+    let state = RecordState::new_with(
+        dir.clone(),
+        false,
+        tape::config::RecordFilter::all(),
+        Some(cfg),
+        proxy_addr.port(),
+    )
+    .unwrap();
+    tokio::spawn(record_accept_loop(listener, state));
+
+    let host = format!("127.0.0.1:{}", origin.port());
+    let resp = raw_request_with_header(
+        proxy_addr,
+        "GET /api/user HTTP/1.1",
+        &host,
+        "Accept-Encoding: gzip, br\r\n",
+    )
+    .await;
+    // 透明模式不改写 Accept-Encoding：客户端要什么编码就透传什么
+    assert!(resp.contains("AE=gzip, br"), "{resp}");
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

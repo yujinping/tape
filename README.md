@@ -16,6 +16,9 @@ tape 面向电视盒子、大屏与 Android 设备的**开发与调试**场景�
 ## 核心特性
 
 - **双模式同址**：`record`（录制）与 `replay`（重放）默认共用 `8888` 端口，两阶段 App 地址无需改动，仅切换 tape 的运行模式。
+- **健康检查**：`GET /__tape/health` 返回 `{ok, mode, version}`，App 设置页可在开启代理前探测连通性与当前模式；该请求不落录制数据，也不干扰正常业务流量。
+- **透明模式**：盒子零改动——把它的网关 / DNAT 指向 tape，按 `Host` 还原目标并转发；目标端口与主机白名单可配，适合写死 IP 的测试环境。
+- **管理界面**：`tape admin` 起本机 Web 控制台（默认 `127.0.0.1:8890`），页面上启停录制 / 回放、改配置、看请求与响应、看日志，不用记命令行。
 - **免代理接入**：支持把 tape 当作服务器、URL 加前缀直访（`http://<tape>:8888/http://www.example.com/...`），无需系统代理，适合电视盒子等无法配置代理的设备。
 - **客户端兼容**：自动识别三种请求形态——标准正向代理（absolute-form）、URL 前缀式（`/https://host/...`）、单斜杠折叠形式（`/https:/host/...`）；Java（Retrofit / OkHttp）可直接以前缀式地址作为 baseUrl 接入。
 - **响应改写**：前缀式请求的跳转与链接自动改写成回到 tape 的地址，离线 / 专网环境不跳公网、不断链；支持 gzip / deflate / br 压缩响应。
@@ -33,6 +36,9 @@ tape 面向电视盒子、大屏与 Android 设备的**开发与调试**场景�
 - [安装与构建](#安装与构建)
 - [快速开始](#快速开始)
 - [客户端接入兼容性](#客户端接入兼容性)
+- [透明模式（盒子不改 App、不配代理）](#透明模式盒子不改-app不配代理)
+- [管理界面（tape admin）](#管理界面tape-admin)
+- [健康检查](#健康检查)
 - [响应改写](#响应改写)
 - [配置说明](#配置说明)
 - [HTTPS 上游（record 模式）](#https-上游record-模式)
@@ -180,6 +186,70 @@ interface Api {
 - 浏览器会把前缀中的 `:` 百分号编码为 `%3A`（个别浏览器编成 `%20`），tape 已兼容这类编码；
 - 浏览器还会做大小写、斜杠等规范化，可能改变请求路径；页面调试建议优先用 curl 或 App，正式使用以 App 为主。
 
+## 透明模式（盒子不改 App、不配代理）
+
+盒子的测试环境里，服务端地址经常是写死的 IP，也不方便改系统代理。透明模式下 tape 只监听一个普通 HTTP 端口，由**网络侧**把盒子的 HTTP 流量导进来，tape 从 `Host` 头还原目标后转发：
+
+```bash
+tape record --transparent \
+  --transparent-allow-port 80,8080,8080-8090 \
+  --transparent-allow-host '*.company.com'
+```
+
+- App 零改动、无需代理配置，原生 HTTP 请求、WebView 页面与 XHR 都能覆盖；
+- 只处理 **origin-form**（`GET /api/x` + `Host`），按 `Host`（含端口）决定转发目标，所以同一个 tape 端口可以服务多个省份 / 环境的接口；
+- 白名单：必须显式给目标端口（`--transparent-allow-port`，支持 `80,8080-8090` 写法），可选主机白名单（`--transparent-allow-host`，`*.foo.com` 只匹配子域）；不在白名单直接 403，避免 tape 变成内网跳板；
+- 只支持明文 HTTP；HTTPS 请直通，tape 不做 MITM。上游是 HTTPS 的场景仍走代理或前缀式；
+- 与代理模式、前缀式可同时开启，三种形态按请求自动识别。
+
+怎么把盒子流量导进来：
+
+1. **笔记本做网关**（推荐，盒子零设置）：盒子网线插笔记本网口，笔记本 Wi-Fi 上网；笔记本上发 DHCP、把默认网关指到自己，再用 `iptables -t nat PREROUTING ... -j DNAT --to <tape-ip>:8888` 把 HTTP 端口转到 tape；
+2. **盒子网关直接指向 tape 所在机器**：盒子能改网关时最省事；
+3. **串一台小路由器**：盒子设置被锁死、或需要固定拓扑时最稳；路由器上做 DNAT 到 tape。
+
+Windows 上暂未内置网关 / 驱动方案（见[路线图](#路线图roadmap)），Windows 测试机目前推荐用手动开关或小路由器。
+
+## 管理界面（tape admin）
+
+`tape admin` 起一个本机 Web 控制台（默认 `http://127.0.0.1:8890`，启动后自动打开浏览器），面向不熟悉命令行的测试同学。启动后默认停在「运行」页：**先选模式（录制 / 回放），再看该模式的选项，点「启动」**；停止后才能改端口与白名单，改完下次启动生效。
+
+```bash
+tape admin                                   # 数据目录 ./tape-api，控制台端口 8890
+tape admin --dir D:\tape-api --no-open      # 指定目录，不自动开浏览器
+```
+
+直接双击 `tape.exe`（不带子命令）等同 `tape admin`。
+
+- 录制选项：端口、透明模式开关、目标端口 / 主机白名单；回放选项：端口、响应改写（相对 / 绝对 / 不改写）与绝对基地址；
+- 选项会写入数据目录下的 `tape-config.toml`，下次打开界面仍然记得；
+- 录制 / 回放由界面以子进程方式拉起，共用数据目录；同一时间只能运行一个，端口冲突会在界面上报错并附上子进程日志；
+- 「运行」页给出本机 IP 与接入地址，录制中显示实时计数、最近请求与 30 分钟请求分布；
+- 设置页只保留录制范围（host / 正则过滤）；端口、透明模式、回放选项都在「运行」页；
+- 默认只绑 `127.0.0.1`；需要别的机器访问时显式 `--bind 0.0.0.0`（无鉴权，仅限可信局域网）；
+- 界面资源已编译进二进制，运行时不依赖 Node、不联网。
+
+![状态页](./docs/images/admin-status.png)
+
+![录制列表](./docs/images/admin-records.png)
+
+## 健康检查
+
+`record` 与 `replay` 都在代理端口上提供健康检查端点，供 App / 设备在开启代理前确认「连得上、当前是什么模式」：
+
+```bash
+curl http://192.168.0.100:8888/__tape/health
+# {"ok":true,"mode":"record","version":"0.2.0"}
+```
+
+- 只识别**直连 tape** 的 `GET /__tape/health`；路径带 `__tape` 前缀，不会与业务接口冲突；
+- 兼容旧路径 `GET /health`：仅当请求没有 `Host`、或 `Host` 端口等于 tape 监听端口时响应，避免透明模式下误吞上游的 `/health`；新接入请用 `/__tape/health`；
+- 正向代理请求（`GET http://host/health`）与前缀式请求（`/http://host/health`）不会被拦截，仍按业务流量转发并录制；
+- 健康检查本身不产生快照，也不下载资源；
+- `mode` 为当前运行模式（`record` / `replay`），`version` 为 tape 版本。
+
+App 侧建议把「开启代理」做成「先请求 `/health`，成功才真正启用」，地址填错时直接提示而不是让业务请求全部超时；完整方案见 [docs/2026-11-21-app-tape-proxy-switch-design.md](./docs/2026-11-21-app-tape-proxy-switch-design.md)。
+
 ## 响应改写
 
 前缀式请求的响应会被自动改写成回到 tape 的地址，保证后续跳转与资源请求继续走 tape：
@@ -236,6 +306,18 @@ absolute_base = "http://127.0.0.1:8888/"   # 仅 absolute 模式生效
 - `absolute_base`：仅 `rewrite = "absolute"` 时生效，建议以 `/` 结尾，默认 `http://127.0.0.1:8888/`。
 - 监听地址默认 `0.0.0.0`（与 `record` 一致），局域网设备可直接访问；可用 `--bind 127.0.0.1` 限制仅本机访问（也可在配置文件 `[replay]` 表设置，命令行优先）。
 
+### [transparent] 透明模式
+
+```toml
+[transparent]
+enabled = true
+allow_ports = ["80", "8080-8090"]
+allow_hosts = ["*.company.com"]
+```
+
+- 等同命令行的 `--transparent` / `--transparent-allow-port` / `--transparent-allow-host`，命令行优先；
+- `allow_ports` 必填且不能为空；`allow_hosts` 为空表示不限制主机，端口白名单仍然生效。
+
 ## HTTPS 上游（record 模式）
 
 - 前缀式 `/https://www.example.com/...` 与 absolute-form `https://www.example.com/...` 均支持：tape 作为 TLS 客户端连上游，解密后照常转发、过滤、录制；快照 origin 记录为 `https://host:port`。
@@ -274,7 +356,9 @@ tape-api/
 ## 命令行参数
 
 ```text
-tape record [--bind 0.0.0.0] [--port 8888] [--dir ./tape-api] [--config tape-config.toml] [--rewrite-on-record] [-v]
+tape admin [--dir ./tape-api] [--port 8890] [--bind 127.0.0.1] [--no-open] [--record-port 8888] [-v]
+tape record [--bind 0.0.0.0] [--port 8888] [--dir ./tape-api] [--config tape-config.toml] [--rewrite-on-record]
+            [--transparent] [--transparent-allow-port 80,8080-8090] [--transparent-allow-host '*.foo.com'] [-v]
 tape replay [--bind 0.0.0.0] [--port 8888] [--dir ./tape-api] [--config tape-config.toml]
                  [--rewrite relative|absolute|none] [--absolute-base http://127.0.0.1:8888/] [-v]
 tape list [--dir ./tape-api]
@@ -283,6 +367,8 @@ tape console [--port 8899] [--log-dir ./logs] [--no-color] [-v]
 tape app [--port 8900] [--log-dir ./logs] [--no-color] [-v]
 ```
 
+- `tape admin`：本机 Web 控制台，默认 `127.0.0.1:8890`，可启停录制 / 回放、查看快照与日志；不带子命令运行 `tape` 时默认进入 admin。详见[管理界面](#管理界面tape-admin)。
+- `--transparent`：开启透明模式，按 `Host` 转发 origin-form 请求；必须配合 `--transparent-allow-port` 使用。详见[透明模式](#透明模式盒子不改-app不配代理)。
 - `--config`：record / replay 共用配置文件。未指定时默认读取数据目录下的 `tape-config.toml`；该文件不存在时 record 录制全部、replay 使用内置默认值；显式指定则必须存在且合法。
 - `--bind`：record / replay 监听地址，默认 `0.0.0.0`（全网卡，供局域网设备访问）。仅本机调试时可用 `127.0.0.1` 缩小暴露面；replay 也可在配置文件 `[replay]` 表设置，命令行优先。
 - `--port`：record / replay 默认都是 `8888`，录制与重放两阶段 App 地址保持一致。
@@ -421,4 +507,6 @@ cargo build --release
 - 请求与响应体都会整体缓冲进内存后再转发 / 落盘（适合接口与静态资源场景，无大小上限；超大文件或流式响应会占用较多内存，暂未做流式落盘）。
 - 不同上游若存在相同相对路径的静态资源，重放时按索引顺序命中，优先 origin 精确匹配；建议录制时用 `--config` 的过滤规则收敛范围。
 - 相对资源路径提取只覆盖根相对路径（`/static/xxx` 等），`../` 形式的相对引用依赖快照兜底（页面渲染时会作为请求被录制）。
+- 透明模式只处理明文 HTTP，且必须显式配置目标端口白名单；HTTPS 与 HTTP/2 流量请直通。Windows 暂无内置的网关 / 驱动接管方案。
+- `tape admin` 默认只监听 `127.0.0.1`、未提供登录鉴权；改成 `0.0.0.0` 后局域网内任何设备都能操作，请只在可信网络使用。
 - record / replay / console / app 均为**无鉴权**的 HTTP 服务且默认监听全网卡，局域网内任何设备都可访问（调试工具的设计使然）；请在可信网络中使用，或用 `--bind 127.0.0.1` 限制仅本机访问。

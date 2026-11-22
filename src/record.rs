@@ -15,11 +15,11 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use crate::config::{CONFIG_FILE_NAME, RecordConfig, RecordFilter};
+use crate::config::{CONFIG_FILE_NAME, RecordConfig, RecordFilter, TransparentConfig};
 use crate::download::{
     ResourceStore, download_resources, is_static_asset_type, looks_like_resource,
 };
-use crate::http_util::{is_hop_by_hop, parse_proxy_target};
+use crate::http_util::{is_hop_by_hop, parse_proxy_target, parse_transparent_target};
 use crate::net::{HttpClient, build_client};
 use crate::rewrite::{RewriteRule, rewrite_location, rewrite_response_bytes_for};
 use crate::snapshot::{self, RequestRecord, ResponseRecord, Snapshot};
@@ -32,10 +32,31 @@ pub struct RecordState {
     pub resources: Arc<Mutex<ResourceStore>>,
     /// 录制过滤规则（host 数组 + 正则数组），空规则 = 录制全部
     pub filter: RecordFilter,
+    /// 透明模式配置；`None` 表示只接受正向代理与前缀式请求
+    pub transparent: Option<TransparentConfig>,
+    /// 本机监听端口（健康检查判自指、透明模式回环防护都要用）
+    pub port: u16,
 }
 
 impl RecordState {
     pub fn new(dir: PathBuf, rewrite_on_record: bool, filter: RecordFilter) -> Result<Arc<Self>> {
+        Self::new_with(
+            dir,
+            rewrite_on_record,
+            filter,
+            None,
+            crate::config::DEFAULT_PORT,
+        )
+    }
+
+    /// 带透明模式配置构造状态（管理端与测试使用）。
+    pub fn new_with(
+        dir: PathBuf,
+        rewrite_on_record: bool,
+        filter: RecordFilter,
+        transparent: Option<TransparentConfig>,
+        port: u16,
+    ) -> Result<Arc<Self>> {
         let recorder = Recorder::new(dir.clone())?;
         let resources = Arc::new(Mutex::new(ResourceStore::open(&dir.join("resources"))?));
         let client = build_client()?;
@@ -45,6 +66,8 @@ impl RecordState {
             rewrite_on_record,
             resources,
             filter,
+            transparent,
+            port,
         }))
     }
 
@@ -54,7 +77,13 @@ impl RecordState {
 }
 
 pub async fn run(cfg: RecordConfig) -> Result<()> {
-    let state = RecordState::new(cfg.dir.clone(), cfg.rewrite_on_record, cfg.filter)?;
+    let state = RecordState::new_with(
+        cfg.dir.clone(),
+        cfg.rewrite_on_record,
+        cfg.filter,
+        cfg.transparent.clone(),
+        cfg.port,
+    )?;
     let listener = TcpListener::bind((cfg.bind, cfg.port)).await?;
     let abs_dir = std::path::absolute(&cfg.dir).unwrap_or_else(|_| cfg.dir.clone());
     info!(
@@ -75,7 +104,18 @@ pub async fn run(cfg: RecordConfig) -> Result<()> {
         }
         info!("录制过滤: 仅配置文件中匹配的上游（其余请求正常转发但不落快照）");
     }
-    info!("请在 APP/设备上配置 HTTP 代理为 本机IP:{}", cfg.port);
+    if let Some(transparent) = &state.transparent {
+        info!(
+            "透明模式: 已开启，目标端口白名单 {:?}（只放行这些端口；Host 头决定转发目标）",
+            transparent.allowed_ports()
+        );
+        info!(
+            "透明模式接入: 把盒子网关/DNAT 指向本机 {}:{}，只劫持 http（https 请直通，不做 MITM）",
+            cfg.bind, cfg.port
+        );
+    } else {
+        info!("请在 APP/设备上配置 HTTP 代理为 本机IP:{}", cfg.port);
+    }
     accept_loop(listener, state).await
 }
 
@@ -92,10 +132,16 @@ pub async fn accept_loop(listener: TcpListener, state: Arc<RecordState>) -> Resu
 }
 
 async fn serve_conn(state: Arc<RecordState>, stream: TcpStream, _addr: SocketAddr) -> Result<()> {
+    // 健康检查要判断 Host 是否指向 tape 自身；用连接的本端口最准确
+    // （配置端口与实际监听端口一致，测试里监听的是临时端口）。
+    let local_port = stream
+        .local_addr()
+        .map(|addr| addr.port())
+        .unwrap_or(crate::config::DEFAULT_PORT);
     let io = TokioIo::new(stream);
     let service = service_fn(move |req| {
         let state = state.clone();
-        async move { Ok::<_, std::convert::Infallible>(handle_request(state, req).await) }
+        async move { Ok::<_, std::convert::Infallible>(handle_request(state, req, local_port).await) }
     });
     http1::Builder::new()
         .keep_alive(true)
@@ -108,8 +154,43 @@ async fn serve_conn(state: Arc<RecordState>, stream: TcpStream, _addr: SocketAdd
 pub async fn handle_request(
     state: Arc<RecordState>,
     req: Request<Incoming>,
+    local_port: u16,
 ) -> Response<Full<Bytes>> {
-    let Some(target) = parse_proxy_target(req.uri()) else {
+    if crate::health::is_request(&req, local_port) {
+        return crate::health::response("record");
+    }
+    // 三种入口：absolute-form（正向代理）、/http://host/path（前缀式）、
+    // origin-form + Host（透明模式，网络层把流量引到本机）。
+    let target = if let Some(target) = parse_proxy_target(req.uri()) {
+        target
+    } else if let Some(cfg) = &state.transparent {
+        let Some(target) = parse_transparent_target(&req) else {
+            return simple_response(
+                StatusCode::BAD_REQUEST,
+                "透明模式请求缺少可解析的 Host 头，无法确定转发目标（HTTP/1.0 或畸形请求）",
+            );
+        };
+        if !cfg.allows(&target.authority) {
+            warn!(
+                "透明模式拒绝目标（不在端口/主机白名单）: {}",
+                target.authority
+            );
+            return simple_response(
+                StatusCode::FORBIDDEN,
+                &format!(
+                    "目标 {} 不在透明模式白名单内（只放行业务端口，避免 tape 成为开放代理）",
+                    target.authority
+                ),
+            );
+        }
+        if cfg.is_self_target(&target.authority) {
+            return simple_response(
+                StatusCode::BAD_REQUEST,
+                "检测到转发目标指向 tape 自身（回环），请检查 Host 头或 DNAT 规则",
+            );
+        }
+        target
+    } else {
         return simple_response(
             StatusCode::BAD_REQUEST,
             "tape record 需要 absolute-form 请求行（正向代理），或 /http://host/path 前缀式请求路径（无法配置代理时直接加前缀访问）",
@@ -124,6 +205,8 @@ pub async fn handle_request(
     }
 
     let prefix_style = target.prefix;
+    // 透明模式：没有 scheme、不是前缀式，说明目标是按 Host 头解析出来的
+    let transparent = !prefix_style && req.uri().scheme_str().is_none();
     let authority = target.authority;
     let record = state.should_record(&authority);
     let origin = format!("{scheme}://{authority}");
@@ -163,20 +246,26 @@ pub async fn handle_request(
         // 下面统一覆写为目标 authority。
         // Accept-Encoding 也覆写为 identity：保证上游返回明文，页面/JS/CSS 才能被改写；
         // 否则浏览器带 gzip/br 时上游压缩响应，压缩体无法改写，页面链接会直连公网。
-        if is_hop_by_hop(name)
-            || name == hyper::header::HOST
-            || name == hyper::header::ACCEPT_ENCODING
-        {
+        if is_hop_by_hop(name) || name == hyper::header::HOST {
+            continue;
+        }
+        // 代理式/前缀式把 Accept-Encoding 覆写为 identity：保证上游返回明文，
+        // 页面/JS/CSS 才能被改写。透明模式原样透传，录制保留真实线上形态
+        // （客户端带 gzip/br 时响应保持压缩，快照按压缩字节存，回放时原样返回）。
+        if !transparent && name == hyper::header::ACCEPT_ENCODING {
             continue;
         }
         builder = builder.header(name, value);
     }
     builder = builder.header(hyper::header::HOST, &authority);
-    builder = builder.header(hyper::header::ACCEPT_ENCODING, "identity");
+    if !transparent {
+        builder = builder.header(hyper::header::ACCEPT_ENCODING, "identity");
+    }
     // 防盗链兜底：部分 CDN（如 mintcdn）对无 Referer 的静态资源请求会拖延/拦截；
     // 浏览器可能因 Referrer-Policy 不带 Referer，这里对静态资源 GET/HEAD 补页面 origin 的 Referer
     // （客户端已带 Referer 时原样保留，不改写）。
-    if !parts.headers.contains_key(hyper::header::REFERER)
+    if !transparent
+        && !parts.headers.contains_key(hyper::header::REFERER)
         && (method == hyper::Method::GET || method == hyper::Method::HEAD)
         && looks_like_resource(&path_and_query)
     {
@@ -285,7 +374,7 @@ pub async fn handle_request(
                         origin: authority.clone(),
                     },
                 )
-            } else if state.rewrite_on_record {
+            } else if state.rewrite_on_record && !transparent {
                 rewrite_response_bytes_for(
                     &resp_body,
                     &content_encoding,
